@@ -123,6 +123,10 @@ export async function calculateRoutes(passengers, destination, mainTime, onProgr
         const effectiveMode = resolveMode(mode, validPassengers.length);
         console.log(`  Effective mode: ${effectiveMode} (requested: ${mode}, valid passengers: ${validPassengers.length})`);
 
+        // #region agent log
+        fetch('http://127.0.0.1:7535/ingest/806e7e9c-8029-4497-bcb1-3d4cde981892',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b3b974'},body:JSON.stringify({sessionId:'b3b974',hypothesisId:'H2',location:'routingAlgorithm.js:124',message:'calculateRoutes — about to call matching',data:{validPassengersCount:validPassengers.length,effectiveMode,bucketTime},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+
         let bucketTaxis;
         if (effectiveMode === 'smart') {
             const result = await smartMatch(validPassengers, destination, arrivalDate, bucketTime, onProgress);
@@ -170,7 +174,14 @@ async function smartMatch(passengers, destination, arrivalDate, bucketTime, onPr
     console.group(`[ROUTING] 🧠 smartMatch — ${n} passengers, bucket=${bucketTime}`);
     console.log(`  Passengers sorted by directTime:`, passengers.map(p => `${p.name} (${p.directTime?.toFixed(1)} min)`));
 
+    // #region agent log
+    fetch('http://127.0.0.1:7535/ingest/806e7e9c-8029-4497-bcb1-3d4cde981892',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b3b974'},body:JSON.stringify({sessionId:'b3b974',hypothesisId:'H1',location:'routingAlgorithm.js:173',message:'smartMatch entered',data:{n,passengers_0:passengers[0]??'UNDEFINED',bucketTime},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+
     if (n <= 1) {
+        // #region agent log
+        fetch('http://127.0.0.1:7535/ingest/806e7e9c-8029-4497-bcb1-3d4cde981892',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b3b974'},body:JSON.stringify({sessionId:'b3b974',hypothesisId:'H1',location:'routingAlgorithm.js:175',message:'n<=1 branch — checking solo',data:{n,solo_defined:passengers[0]!==undefined,solo_directTime:passengers[0]?.directTime??'UNDEFINED'},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
         const solo = passengers[0];
         const pickupTime = subtractMinutesFromTime(bucketTime, solo.directTime);
         console.log(`  Solo passenger — skip matching. pickup=${pickupTime}`);
