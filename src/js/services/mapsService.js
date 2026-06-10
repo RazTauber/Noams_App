@@ -19,12 +19,59 @@ import { loadPairMatrix, savePairMatrix } from './groupMemoryService.js';
 let apiCallCounter = 0;
 let proxyAvailable = null; // null = unchecked, true/false after first attempt
 
-export function getApiCallCount() {
-    return apiCallCounter;
+// ── Cost & milestone tracking ─────────────────────────────────────────────────
+// Pricing: Distance Matrix $5/1000 elements, Directions $5/1000 requests
+const COST_PER_ELEMENT = 5 / 1000;   // $0.005 per origin×dest pair
+const COST_PER_DIRECTION = 5 / 1000; // $0.005 per Directions request
+const COST_ALERT_INTERVAL = 2;        // fire alert every $2
+const CALL_ALERT_INTERVAL = 10;       // fire alert every 10 calls
+
+let cumulativeCost = 0;
+let lastCostMilestone = 0;
+let lastCallMilestone = 0;
+const _milestoneListeners = [];
+
+/** Register a callback that fires when a cost or call milestone is crossed. */
+export function onApiMilestone(callback) {
+    _milestoneListeners.push(callback);
 }
+
+export function getApiCallCount() { return apiCallCounter; }
+export function getCumulativeCost() { return cumulativeCost; }
 
 export function resetApiCallCount() {
     apiCallCounter = 0;
+    cumulativeCost = 0;
+    lastCostMilestone = 0;
+    lastCallMilestone = 0;
+}
+
+function estimateCallCost(type, params) {
+    if (type === 'distancematrix') {
+        const origins = (params.origins || '').split('|').length;
+        const dests   = (params.destinations || '').split('|').length;
+        return origins * dests * COST_PER_ELEMENT;
+    }
+    if (type === 'directions') {
+        return COST_PER_DIRECTION;
+    }
+    return 0;
+}
+
+function checkMilestones(callCost) {
+    cumulativeCost += callCost;
+
+    const costMilestone = Math.floor(cumulativeCost / COST_ALERT_INTERVAL);
+    if (costMilestone > lastCostMilestone) {
+        lastCostMilestone = costMilestone;
+        _milestoneListeners.forEach(cb => cb('cost', cumulativeCost, apiCallCounter));
+    }
+
+    const callMilestone = Math.floor(apiCallCounter / CALL_ALERT_INTERVAL);
+    if (callMilestone > lastCallMilestone) {
+        lastCallMilestone = callMilestone;
+        _milestoneListeners.forEach(cb => cb('calls', cumulativeCost, apiCallCounter));
+    }
 }
 
 /**
@@ -42,30 +89,108 @@ export function isApiConfigured() {
  * POST to the /api/maps proxy with the given type and params.
  * Returns the parsed JSON from Google Maps, or throws on error.
  * Sets proxyAvailable based on whether the call succeeded.
+ * Tracks cost and fires milestone notifications after each successful call.
  */
 async function callProxy(type, params) {
-    const response = await fetch('/api/maps', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type, ...params }),
-    });
+    const callId = `#${apiCallCounter}`;
+    const callCost = estimateCallCost(type, params);
+    const originsCount = type === 'distancematrix' ? (params.origins || '').split('|').length : null;
+    const destsCount   = type === 'distancematrix' ? (params.destinations || '').split('|').length : null;
+
+    console.group(`[MAPS] 📡 Google API call ${callId} — ${type.toUpperCase()}`);
+    if (type === 'distancematrix') {
+        console.log(`  Origins   (${originsCount}):`, (params.origins || '').split('|'));
+        console.log(`  Dests     (${destsCount}):`,   (params.destinations || '').split('|'));
+        console.log(`  Elements: ${originsCount * destsCount}  |  Est. cost: $${callCost.toFixed(4)}`);
+    } else if (type === 'directions') {
+        console.log(`  Origin:   ${params.origin}`);
+        console.log(`  Dest:     ${params.destination}`);
+        if (params.waypoints) console.log(`  Via:      ${params.waypoints.split('|').join(' → ')}`);
+        console.log(`  Est. cost: $${callCost.toFixed(4)}`);
+    }
+    if (params.arrival_time) {
+        const ts = parseInt(params.arrival_time, 10);
+        console.log(`  Arrival:  ${new Date(ts * 1000).toLocaleTimeString()}`);
+    }
+    console.log(`  Cumulative calls so far: ${apiCallCounter}  |  Cumulative cost: $${cumulativeCost.toFixed(4)}`);
+
+    let response;
+    const t0 = performance.now();
+    try {
+        response = await fetch('/api/maps', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type, ...params }),
+        });
+    } catch (err) {
+        console.warn(`  ❌ Network error — proxy unreachable:`, err.message);
+        console.groupEnd();
+        proxyAvailable = false;
+        throw new Error('Proxy unreachable');
+    }
 
     if (!response.ok) {
+        console.warn(`  ❌ HTTP ${response.status}`);
+        console.groupEnd();
         if (response.status === 503) {
-            // Proxy exists but API key not configured server-side
             proxyAvailable = false;
             throw new Error('GOOGLE_MAPS_API_KEY not configured on server');
+        }
+        if (response.status === 502 || response.status === 504) {
+            proxyAvailable = false;
+            throw new Error('Proxy server unavailable');
         }
         throw new Error(`Proxy HTTP error: ${response.status}`);
     }
 
     const data = await response.json();
+    const elapsed = (performance.now() - t0).toFixed(0);
 
     if (data.error) {
+        console.warn(`  ❌ Proxy error: ${data.error}`);
+        console.groupEnd();
+        if (data.error.includes('GOOGLE_MAPS_API_KEY')) proxyAvailable = false;
         throw new Error(`Proxy error: ${data.error}`);
     }
 
+    console.log(`  ✅ Status: ${data.status}  |  Round-trip: ${elapsed}ms`);
+
+    if (type === 'distancematrix' && data.rows) {
+        console.group(`  📊 Distance Matrix Results`);
+        data.rows.forEach((row, i) => {
+            const originLabel = (params.origins || '').split('|')[i] || `Origin ${i}`;
+            row.elements.forEach((el, j) => {
+                const destLabel = (params.destinations || '').split('|')[j] || `Dest ${j}`;
+                if (el.status === 'OK') {
+                    const mins = (el.duration_in_traffic?.value || el.duration?.value || 0) / 60;
+                    const traffic = el.duration_in_traffic ? ` (traffic: ${(el.duration_in_traffic.value/60).toFixed(1)} min)` : '';
+                    console.log(`    [${i}→${j}] ${originLabel}  →  ${destLabel} : ${mins.toFixed(1)} min${traffic}`);
+                } else {
+                    console.warn(`    [${i}→${j}] ${originLabel}  →  ${destLabel} : ❌ ${el.status}`);
+                }
+            });
+        });
+        console.groupEnd();
+    }
+
+    if (type === 'directions' && data.routes?.[0]) {
+        console.group(`  🗺️ Directions Results`);
+        const legs = data.routes[0].legs;
+        let totalSecs = 0;
+        legs.forEach((leg, i) => {
+            const secs = leg.duration_in_traffic?.value || leg.duration?.value || 0;
+            totalSecs += secs;
+            const traffic = leg.duration_in_traffic ? ` (w/ traffic: ${(leg.duration_in_traffic.value/60).toFixed(1)} min)` : '';
+            console.log(`    Leg ${i}: ${leg.start_address?.split(',')[0]} → ${leg.end_address?.split(',')[0]} : ${(secs/60).toFixed(1)} min${traffic}`);
+        });
+        console.log(`    Total: ${(totalSecs/60).toFixed(1)} min`);
+        console.groupEnd();
+    }
+
+    console.groupEnd();
+
     proxyAvailable = true;
+    checkMilestones(callCost);
     return data;
 }
 
@@ -79,8 +204,12 @@ async function callProxy(type, params) {
  * @returns {Promise<{duration: number, status: string}>} duration in minutes
  */
 export async function getTravelTime(origin, destination, arrivalTime) {
+    console.log(`[MAPS] getTravelTime: "${origin}" → "${destination}" @ ${arrivalTime.toLocaleTimeString()}`);
+
     if (!isApiConfigured()) {
-        return getMockTravelTime(origin, destination);
+        const mock = getMockTravelTime(origin, destination);
+        console.log(`[MAPS]   → MOCK result: ${mock.duration?.toFixed(1)} min`);
+        return mock;
     }
 
     const arrivalTimestamp = Math.floor(arrivalTime.getTime() / 1000);
@@ -99,20 +228,23 @@ export async function getTravelTime(origin, destination, arrivalTime) {
 
         const element = data.rows[0]?.elements[0];
         if (!element || element.status !== 'OK') {
+            console.warn(`[MAPS]   → ADDRESS_ERROR for "${origin}"`);
             return { duration: null, status: 'ADDRESS_ERROR' };
         }
 
-        return {
-            duration: element.duration_in_traffic?.value
-                ? element.duration_in_traffic.value / 60
-                : element.duration.value / 60,
-            status: 'OK',
-        };
+        const duration = element.duration_in_traffic?.value
+            ? element.duration_in_traffic.value / 60
+            : element.duration.value / 60;
+        console.log(`[MAPS]   → ${duration.toFixed(1)} min`);
+        return { duration, status: 'OK' };
     } catch (error) {
         if (proxyAvailable === false) {
-            return getMockTravelTime(origin, destination);
+            const mock = getMockTravelTime(origin, destination);
+            console.log(`[MAPS]   → MOCK fallback: ${mock.duration?.toFixed(1)} min`);
+            return mock;
         }
         if (error.message.includes('API')) throw error;
+        console.warn(`[MAPS]   → NETWORK_ERROR:`, error.message);
         return { duration: null, status: 'NETWORK_ERROR' };
     }
 }
@@ -126,8 +258,13 @@ export async function getTravelTime(origin, destination, arrivalTime) {
  * @returns {Promise<Array<{duration: number|null, status: string}>>}
  */
 export async function getBatchTravelTimes(origins, destination, arrivalTime) {
+    console.group(`[MAPS] getBatchTravelTimes — ${origins.length} origins → "${destination}" @ ${arrivalTime.toLocaleTimeString()}`);
+
     if (!isApiConfigured()) {
-        return origins.map(origin => getMockTravelTime(origin, destination));
+        const mocks = origins.map(origin => getMockTravelTime(origin, destination));
+        console.log(`  → All MOCK results:`, mocks.map((m, i) => `${origins[i]}: ${m.duration?.toFixed(1)} min`));
+        console.groupEnd();
+        return mocks;
     }
 
     const arrivalHour = arrivalTime.getHours();
@@ -137,14 +274,21 @@ export async function getBatchTravelTimes(origins, destination, arrivalTime) {
     for (let i = 0; i < origins.length; i++) {
         const cached = getCachedTravelTime(origins[i], destination, arrivalHour);
         if (cached !== null) {
+            console.log(`  [${i}] CACHE HIT  "${origins[i]}" → ${cached.duration?.toFixed(1)} min`);
             results[i] = cached;
         } else {
+            console.log(`  [${i}] cache miss "${origins[i]}"`);
             uncachedIndices.push(i);
         }
     }
 
-    if (uncachedIndices.length === 0) return results;
+    if (uncachedIndices.length === 0) {
+        console.log(`  ✅ All ${origins.length} results served from cache — no API call needed`);
+        console.groupEnd();
+        return results;
+    }
 
+    console.log(`  Fetching ${uncachedIndices.length} uncached origins from API...`);
     const uncachedOrigins = uncachedIndices.map(i => origins[i]);
     const arrivalTimestamp = Math.floor(arrivalTime.getTime() / 1000);
 
@@ -160,12 +304,14 @@ export async function getBatchTravelTimes(origins, destination, arrivalTime) {
             throw new Error(`Google API error: ${data.status} - ${data.error_message || 'API key issue'}`);
         }
 
+        console.group(`  Parsing ${data.rows.length} rows`);
         for (let r = 0; r < data.rows.length; r++) {
             const element = data.rows[r].elements[0];
             const originalIndex = uncachedIndices[r];
             let result;
             if (!element || element.status !== 'OK') {
                 result = { duration: null, status: element?.status || 'UNKNOWN_ERROR' };
+                console.warn(`    [${originalIndex}] ❌ ${origins[originalIndex]} — ${result.status}`);
             } else {
                 result = {
                     duration: element.duration_in_traffic?.value
@@ -173,25 +319,35 @@ export async function getBatchTravelTimes(origins, destination, arrivalTime) {
                         : element.duration.value / 60,
                     status: 'OK',
                 };
+                const trafficNote = element.duration_in_traffic
+                    ? ` (traffic: ${(element.duration_in_traffic.value/60).toFixed(1)} min)`
+                    : '';
+                console.log(`    [${originalIndex}] ✅ ${origins[originalIndex]} — ${result.duration.toFixed(1)} min${trafficNote}`);
             }
             results[originalIndex] = result;
             if (result.status === 'OK') {
                 cacheTravelTime(origins[originalIndex], destination, arrivalHour, result);
             }
         }
+        console.groupEnd();
 
+        console.groupEnd();
         return results;
     } catch (error) {
         if (proxyAvailable === false) {
             for (const idx of uncachedIndices) {
                 results[idx] = getMockTravelTime(origins[idx], destination);
+                console.log(`  [${idx}] MOCK fallback: ${results[idx].duration?.toFixed(1)} min`);
             }
+            console.groupEnd();
             return results;
         }
-        if (error.message.includes('API')) throw error;
+        if (error.message.includes('API')) { console.groupEnd(); throw error; }
         for (const idx of uncachedIndices) {
             results[idx] = { duration: null, status: 'NETWORK_ERROR' };
         }
+        console.warn(`  ❌ NETWORK_ERROR for ${uncachedIndices.length} origins`);
+        console.groupEnd();
         return results;
     }
 }
@@ -206,13 +362,25 @@ export async function getBatchTravelTimes(origins, destination, arrivalTime) {
 export async function getRouteDuration(waypoints, arrivalTime) {
     if (waypoints.length < 2) return { totalDuration: 0, legDurations: [], status: 'OK' };
 
+    console.group(`[MAPS] getRouteDuration — ${waypoints.length} waypoints @ ${arrivalTime.toLocaleTimeString()}`);
+    console.log(`  Route: ${waypoints.join(' → ')}`);
+
     if (!isApiConfigured()) {
-        return getMockRouteDuration(waypoints);
+        const mock = getMockRouteDuration(waypoints);
+        console.log(`  → MOCK: ${mock.totalDuration?.toFixed(1)} min total, legs: [${mock.legDurations.map(d => d.toFixed(1)).join(', ')}]`);
+        console.groupEnd();
+        return mock;
     }
 
     const arrivalHour = arrivalTime.getHours();
     const cached = getCachedRouteDuration(waypoints, arrivalHour);
-    if (cached !== null) return cached;
+    if (cached !== null) {
+        console.log(`  ✅ CACHE HIT: ${cached.totalDuration?.toFixed(1)} min total`);
+        console.groupEnd();
+        return cached;
+    }
+
+    console.log(`  cache miss — calling Directions API`);
 
     const origin = waypoints[0];
     const destination = waypoints[waypoints.length - 1];
@@ -232,6 +400,8 @@ export async function getRouteDuration(waypoints, arrivalTime) {
         const data = await callProxy('directions', params);
 
         if (data.status !== 'OK') {
+            console.warn(`  ❌ Directions API status: ${data.status}`);
+            console.groupEnd();
             return { totalDuration: null, legDurations: [], status: data.status };
         }
 
@@ -244,13 +414,20 @@ export async function getRouteDuration(waypoints, arrivalTime) {
         );
 
         const result = { totalDuration: totalSeconds / 60, legDurations, status: 'OK' };
+        console.log(`  ✅ Total: ${result.totalDuration.toFixed(1)} min | Legs: [${legDurations.map(d => d.toFixed(1)).join(', ')}]`);
+        console.groupEnd();
         cacheRouteDuration(waypoints, arrivalHour, result);
         return result;
     } catch (error) {
         if (proxyAvailable === false) {
-            return getMockRouteDuration(waypoints);
+            const mock = getMockRouteDuration(waypoints);
+            console.log(`  → MOCK fallback: ${mock.totalDuration?.toFixed(1)} min`);
+            console.groupEnd();
+            return mock;
         }
-        if (error.message.includes('API')) throw error;
+        if (error.message.includes('API')) { console.groupEnd(); throw error; }
+        console.warn(`  ❌ NETWORK_ERROR:`, error.message);
+        console.groupEnd();
         return { totalDuration: null, legDurations: [], status: 'NETWORK_ERROR' };
     }
 }
@@ -281,18 +458,27 @@ export async function getAllPairTravelTimes(addresses, arrivalTime) {
     const n = addresses.length;
     if (n <= 1) return Array.from({ length: n }, () => new Array(n).fill(0));
 
+    console.group(`[MAPS] getAllPairTravelTimes — ${n}×${n} matrix (${n*n} pairs) @ ${arrivalTime.toLocaleTimeString()}`);
+    console.log(`  Addresses:`, addresses);
+
     if (!isApiConfigured()) {
-        return getMockPairMatrix(addresses);
+        const mock = getMockPairMatrix(addresses);
+        console.log(`  → MOCK matrix`);
+        console.groupEnd();
+        return mock;
     }
 
     const CHUNK_SIZE = 25;
     const arrivalTimestamp = Math.floor(arrivalTime.getTime() / 1000);
 
-    // ── Tier 1: load whatever is already in the DB ────────────────────────────
+    console.log(`  Tier 1: loading from DB...`);
     const matrix = await loadPairMatrix(addresses);
     for (let i = 0; i < n; i++) matrix[i][i] = 0;
 
-    // ── Determine which 25×25 chunks still have missing pairs ─────────────────
+    const dbHits = matrix.flat().filter(v => v !== null).length - n;
+    const dbMisses = matrix.flat().filter(v => v === null).length;
+    console.log(`  DB cache: ${dbHits} hits, ${dbMisses} misses`);
+
     const chunksToFetch = [];
     for (let oStart = 0; oStart < n; oStart += CHUNK_SIZE) {
         for (let dStart = 0; dStart < n; dStart += CHUNK_SIZE) {
@@ -311,14 +497,20 @@ export async function getAllPairTravelTimes(addresses, arrivalTime) {
         }
     }
 
-    // All pairs served from DB — zero API calls needed
-    if (chunksToFetch.length === 0) return matrix;
+    if (chunksToFetch.length === 0) {
+        console.log(`  ✅ All pairs in DB — 0 API calls needed`);
+        console.groupEnd();
+        return matrix;
+    }
 
-    // ── Tier 2: fetch only the uncached chunks in parallel ────────────────────
+    console.log(`  Tier 2: fetching ${chunksToFetch.length} chunk(s) from API:`, chunksToFetch);
+
     const results = await Promise.allSettled(
         chunksToFetch.map(({ oStart, dStart }) => {
             const originSlice = addresses.slice(oStart, Math.min(oStart + CHUNK_SIZE, n));
             const destSlice   = addresses.slice(dStart, Math.min(dStart + CHUNK_SIZE, n));
+
+            console.log(`    Chunk [${oStart}..${oStart+originSlice.length-1}] × [${dStart}..${dStart+destSlice.length-1}] — ${originSlice.length}×${destSlice.length} elements`);
 
             apiCallCounter++;
             return callProxy('distancematrix', {
@@ -335,12 +527,18 @@ export async function getAllPairTravelTimes(addresses, arrivalTime) {
     );
 
     if (proxyAvailable === false) {
+        console.log(`  → MOCK fallback for entire matrix`);
+        console.groupEnd();
         return getMockPairMatrix(addresses);
     }
 
     let criticalError = null;
+    let filledPairs = 0;
+    let failedPairs = 0;
+
     for (const result of results) {
         if (result.status === 'rejected') {
+            console.warn(`  ❌ Chunk rejected:`, result.reason?.message);
             if (result.reason?.message?.includes('REQUEST_DENIED') ||
                 result.reason?.message?.includes('OVER_QUERY_LIMIT')) {
                 criticalError = result.reason;
@@ -355,17 +553,26 @@ export async function getAllPairTravelTimes(addresses, arrivalTime) {
                     matrix[oStart + i][dStart + j] = el.duration_in_traffic?.value
                         ? el.duration_in_traffic.value / 60
                         : el.duration.value / 60;
+                    filledPairs++;
+                } else {
+                    failedPairs++;
                 }
             }
         }
     }
 
-    if (criticalError) throw criticalError;
+    console.log(`  Matrix filled: ${filledPairs} pairs OK, ${failedPairs} failed`);
+
+    if (criticalError) {
+        console.groupEnd();
+        throw criticalError;
+    }
 
     for (let i = 0; i < n; i++) matrix[i][i] = 0;
 
-    // ── Persist newly-fetched pairs so the next session skips the API ─────────
-    savePairMatrix(addresses, matrix); // fire-and-forget — don't block the caller
+    console.log(`  Persisting new pairs to DB (fire-and-forget)`);
+    console.groupEnd();
+    savePairMatrix(addresses, matrix);
 
     return matrix;
 }

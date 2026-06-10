@@ -1,11 +1,11 @@
 import * as XLSX from 'xlsx';
 import { parsePassengers } from './utils/helpers.js';
 import { ALGORITHM_CONFIG } from './utils/constants.js';
-import { isApiConfigured, getApiCallCount, resetApiCallCount } from './services/mapsService.js';
+import { isApiConfigured, getApiCallCount, resetApiCallCount, onApiMilestone } from './services/mapsService.js';
 import { clearAllCaches } from './services/cacheService.js';
 import { calculateRoutes, separatePassenger, mergeTaxis, estimateMerge, estimateSeparate, refineTaxis } from './services/routingAlgorithm.js';
 import { exportToExcel, exportToPdf } from './services/exportService.js';
-import { renderPassengerTable, renderTaxiCards, resetMergeSelection, showStatus, hideStatus } from './components/ui.js';
+import { renderPassengerTable, renderTaxiCards, resetMergeSelection, showStatus, hideStatus, showApiAlert } from './components/ui.js';
 
 /**
  * Application state
@@ -33,6 +33,8 @@ function init() {
     setupCalculateButton();
     setupExportButtons();
     setupTemplateDownload();
+
+    onApiMilestone((type, cost, calls) => showApiAlert(type, cost, calls));
 
     if (!isApiConfigured()) {
         console.info(

@@ -51,17 +51,24 @@ function routeDurationKey(waypoints, arrivalHour) {
 
 export function getCachedTravelTime(origin, destination, arrivalHour) {
     const key = travelTimeKey(origin, destination, arrivalHour);
+
     if (memoryCache.has(key)) {
         cacheHits++;
-        return memoryCache.get(key);
+        const val = memoryCache.get(key);
+        console.log(`[CACHE] ✅ MEM HIT  travelTime "${origin}" → "${destination}" @${arrivalHour}h = ${val?.duration?.toFixed(1)} min  (hits=${cacheHits})`);
+        return val;
     }
+
     const stored = getFromStorage(key);
     if (stored !== null) {
         cacheHits++;
         memoryCache.set(key, stored);
+        console.log(`[CACHE] ✅ LS  HIT  travelTime "${origin}" → "${destination}" @${arrivalHour}h = ${stored?.duration?.toFixed(1)} min  (hits=${cacheHits})`);
         return stored;
     }
+
     cacheMisses++;
+    console.log(`[CACHE] ❌ MISS      travelTime "${origin}" → "${destination}" @${arrivalHour}h  (misses=${cacheMisses})`);
     return null;
 }
 
@@ -69,37 +76,51 @@ export function cacheTravelTime(origin, destination, arrivalHour, result) {
     const key = travelTimeKey(origin, destination, arrivalHour);
     memoryCache.set(key, result);
     setToStorage(key, result);
+    console.log(`[CACHE] 💾 STORE travelTime "${origin}" → "${destination}" @${arrivalHour}h = ${result?.duration?.toFixed(1)} min  (memSize=${memoryCache.size})`);
 }
 
 export function getCachedRouteDuration(waypoints, arrivalHour) {
     const key = routeDurationKey(waypoints, arrivalHour);
+    const shortRoute = waypoints.map(w => w.split(',')[0]).join(' → ');
+
     if (memoryCache.has(key)) {
         cacheHits++;
-        return memoryCache.get(key);
+        const val = memoryCache.get(key);
+        console.log(`[CACHE] ✅ MEM HIT  routeDuration [${shortRoute}] @${arrivalHour}h = ${val?.totalDuration?.toFixed(1)} min  (hits=${cacheHits})`);
+        return val;
     }
+
     const stored = getFromStorage(key);
     if (stored !== null) {
         cacheHits++;
         memoryCache.set(key, stored);
+        console.log(`[CACHE] ✅ LS  HIT  routeDuration [${shortRoute}] @${arrivalHour}h = ${stored?.totalDuration?.toFixed(1)} min  (hits=${cacheHits})`);
         return stored;
     }
+
     cacheMisses++;
+    console.log(`[CACHE] ❌ MISS      routeDuration [${shortRoute}] @${arrivalHour}h  (misses=${cacheMisses})`);
     return null;
 }
 
 export function cacheRouteDuration(waypoints, arrivalHour, result) {
     const key = routeDurationKey(waypoints, arrivalHour);
+    const shortRoute = waypoints.map(w => w.split(',')[0]).join(' → ');
     memoryCache.set(key, result);
     setToStorage(key, result);
+    console.log(`[CACHE] 💾 STORE routeDuration [${shortRoute}] @${arrivalHour}h = ${result?.totalDuration?.toFixed(1)} min, legs=[${result?.legDurations?.map(d => d.toFixed(1)).join(', ')}]  (memSize=${memoryCache.size})`);
 }
 
 /**
  * Evict all stale localStorage entries (from previous days) and clear memory cache.
  */
 export function clearAllCaches() {
+    const prevMemSize = memoryCache.size;
     memoryCache.clear();
     cacheHits = 0;
     cacheMisses = 0;
+
+    let removedFromStorage = 0;
     try {
         const keysToRemove = [];
         for (let i = 0; i < localStorage.length; i++) {
@@ -116,15 +137,20 @@ export function clearAllCaches() {
             }
         }
         keysToRemove.forEach(k => localStorage.removeItem(k));
+        removedFromStorage = keysToRemove.length;
     } catch {
         // localStorage unavailable
     }
+
+    console.log(`[CACHE] 🗑️ clearAllCaches — memory: ${prevMemSize} entries cleared, localStorage: ${removedFromStorage} stale entries removed`);
 }
 
 export function getCacheStats() {
-    return {
+    const stats = {
         hits: cacheHits,
         misses: cacheMisses,
         memorySize: memoryCache.size,
     };
+    console.log(`[CACHE] 📊 Stats — hits=${stats.hits}, misses=${stats.misses}, memSize=${stats.memorySize}, hitRate=${stats.hits + stats.misses > 0 ? ((stats.hits / (stats.hits + stats.misses)) * 100).toFixed(1) : 0}%`);
+    return stats;
 }

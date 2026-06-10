@@ -34,12 +34,13 @@ function getClient() {
 }
 
 export function isDbConfigured() {
-    return !!(
+    const configured = !!(
         SUPABASE_URL &&
         SUPABASE_ANON_KEY &&
         SUPABASE_URL      !== 'your_supabase_project_url_here' &&
         SUPABASE_ANON_KEY !== 'your_supabase_anon_key_here'
     );
+    return configured;
 }
 
 // ─── Address normalization ────────────────────────────────────────────────────
@@ -93,20 +94,49 @@ function buildAddressSetHash(addresses) {
  */
 export async function lookupGrouping(destination, arrivalHour, addresses) {
     const db = getClient();
-    if (!db) return null;
+    const hash = buildAddressSetHash(addresses);
 
+    if (!db) {
+        console.log(`[DB] lookupGrouping — DB not configured, skipping`);
+        return null;
+    }
+
+    console.group(`[DB] 🔍 lookupGrouping dest="${destination}" hour=${arrivalHour} hash=${hash}`);
+    console.log(`  Addresses (${addresses.length}):`, addresses);
+
+    const t0 = performance.now();
     try {
         const { data, error } = await db
             .from('grouping_memory')
             .select('grouping')
             .eq('dest_norm',     normalizeAddress(destination))
             .eq('arrival_hour',  arrivalHour)
-            .eq('addr_set_hash', buildAddressSetHash(addresses))
+            .eq('addr_set_hash', hash)
             .maybeSingle();
 
-        if (error || !data) return null;
+        const elapsed = (performance.now() - t0).toFixed(0);
+
+        if (error) {
+            console.warn(`  ❌ DB error (${elapsed}ms):`, error.message);
+            console.groupEnd();
+            return null;
+        }
+
+        if (!data) {
+            console.log(`  ❌ MISS — no saved grouping found  (${elapsed}ms)`);
+            console.groupEnd();
+            return null;
+        }
+
+        console.log(`  ✅ HIT — grouping found (${elapsed}ms):`);
+        data.grouping.forEach((group, i) => {
+            console.log(`    Taxi ${i + 1}: [${group.join(' → ')}]`);
+        });
+        console.groupEnd();
         return data.grouping;
-    } catch {
+    } catch (err) {
+        console.warn(`  ❌ Exception:`, err?.message);
+        console.groupEnd();
         return null;
     }
 }
@@ -122,20 +152,34 @@ export async function lookupGrouping(destination, arrivalHour, addresses) {
  */
 export async function saveGrouping(destination, arrivalHour, addresses, grouping) {
     const db = getClient();
-    if (!db) return;
+    const hash = buildAddressSetHash(addresses);
 
+    if (!db) {
+        console.log(`[DB] saveGrouping — DB not configured, skipping`);
+        return;
+    }
+
+    console.group(`[DB] 💾 saveGrouping dest="${destination}" hour=${arrivalHour} hash=${hash}`);
+    grouping.forEach((group, i) => {
+        console.log(`  Taxi ${i + 1}: [${group.join(' → ')}]`);
+    });
+
+    const t0 = performance.now();
     try {
         await db.rpc('upsert_grouping', {
             p_dest_norm:     normalizeAddress(destination),
             p_arrival_hour:  arrivalHour,
-            p_addr_set_hash: buildAddressSetHash(addresses),
+            p_addr_set_hash: hash,
             p_addresses:     addresses.map(normalizeAddress).sort(),
             p_grouping:      grouping,
             p_today:         new Date().toISOString().slice(0, 10),
         });
-    } catch {
-        // DB is optional — silent fail
+        const elapsed = (performance.now() - t0).toFixed(0);
+        console.log(`  ✅ Saved (${elapsed}ms)`);
+    } catch (err) {
+        console.warn(`  ❌ Failed to save grouping:`, err?.message);
     }
+    console.groupEnd();
 }
 
 // ─── address_pair_cache ───────────────────────────────────────────────────────
@@ -153,10 +197,17 @@ export async function loadPairMatrix(addresses) {
     const matrix = Array.from({ length: n }, () => new Array(n).fill(null));
 
     const db = getClient();
-    if (!db || n === 0) return matrix;
+    if (!db || n === 0) {
+        console.log(`[DB] loadPairMatrix — ${!db ? 'DB not configured' : 'empty addresses'}, returning null matrix`);
+        return matrix;
+    }
 
     const normalized = addresses.map(normalizeAddress);
 
+    console.group(`[DB] 📥 loadPairMatrix — ${n} addresses (${n * n - n} non-diagonal pairs)`);
+    console.log(`  Addresses:`, addresses);
+
+    const t0 = performance.now();
     try {
         const { data, error } = await db
             .from('address_pair_cache')
@@ -164,21 +215,46 @@ export async function loadPairMatrix(addresses) {
             .in('origin_norm', normalized)
             .in('dest_norm',   normalized);
 
-        if (error || !data) return matrix;
+        const elapsed = (performance.now() - t0).toFixed(0);
+
+        if (error || !data) {
+            console.warn(`  ❌ DB error (${elapsed}ms):`, error?.message ?? 'no data');
+            console.groupEnd();
+            return matrix;
+        }
 
         const indexMap = new Map(normalized.map((a, i) => [a, i]));
+        let hits = 0;
 
         for (const row of data) {
             const i = indexMap.get(row.origin_norm);
             const j = indexMap.get(row.dest_norm);
             if (i !== undefined && j !== undefined) {
                 matrix[i][j] = row.travel_minutes;
+                hits++;
             }
         }
-    } catch {
-        // Return whatever is populated so far
+
+        const total = n * n - n;
+        const misses = total - hits;
+        console.log(`  ✅ ${data.length} rows from DB in ${elapsed}ms — ${hits} pairs filled, ${misses} still null`);
+
+        if (hits > 0) {
+            console.group(`  Cached pairs`);
+            for (let i = 0; i < n; i++) {
+                for (let j = 0; j < n; j++) {
+                    if (i !== j && matrix[i][j] !== null) {
+                        console.log(`    [${i}→${j}] "${addresses[i]}" → "${addresses[j]}" : ${matrix[i][j].toFixed(1)} min`);
+                    }
+                }
+            }
+            console.groupEnd();
+        }
+    } catch (err) {
+        console.warn(`  ❌ Exception:`, err?.message);
     }
 
+    console.groupEnd();
     return matrix;
 }
 
@@ -191,7 +267,10 @@ export async function loadPairMatrix(addresses) {
  */
 export async function savePairMatrix(addresses, matrix) {
     const db = getClient();
-    if (!db) return;
+    if (!db) {
+        console.log(`[DB] savePairMatrix — DB not configured, skipping`);
+        return;
+    }
 
     const normalized = addresses.map(normalizeAddress);
     const rows = [];
@@ -208,11 +287,21 @@ export async function savePairMatrix(addresses, matrix) {
         }
     }
 
-    if (rows.length === 0) return;
+    if (rows.length === 0) {
+        console.log(`[DB] savePairMatrix — 0 pairs to save, skipping`);
+        return;
+    }
 
+    console.group(`[DB] 📤 savePairMatrix — persisting ${rows.length} pairs`);
+    rows.forEach(r => console.log(`  "${r.origin_norm}" → "${r.dest_norm}" : ${r.travel_minutes.toFixed(1)} min`));
+
+    const t0 = performance.now();
     try {
         await db.rpc('upsert_pair_times', { p_rows: rows });
-    } catch {
-        // silent fail
+        const elapsed = (performance.now() - t0).toFixed(0);
+        console.log(`  ✅ Saved ${rows.length} pairs (${elapsed}ms)`);
+    } catch (err) {
+        console.warn(`  ❌ Failed:`, err?.message);
     }
+    console.groupEnd();
 }

@@ -198,6 +198,64 @@ export function hideStatus(elementId) {
     el.className = 'status-message';
 }
 
+// ── API cost toast notifications ──────────────────────────────────────────────
+
+let _toastContainer = null;
+
+function getToastContainer() {
+    if (!_toastContainer) {
+        _toastContainer = document.createElement('div');
+        _toastContainer.id = 'api-toast-container';
+        document.body.appendChild(_toastContainer);
+    }
+    return _toastContainer;
+}
+
+/**
+ * Show a dismissible toast alert for API cost/call milestones.
+ * @param {'cost'|'calls'} type
+ * @param {number} cost   - cumulative estimated cost in USD
+ * @param {number} calls  - total API call count
+ */
+export function showApiAlert(type, cost, calls) {
+    const container = getToastContainer();
+
+    const toast = document.createElement('div');
+    toast.className = 'api-toast';
+
+    const icon  = type === 'cost' ? '💳' : '📡';
+    const title = type === 'cost'
+        ? `~$${cost.toFixed(2)} in Maps API costs this session`
+        : `${calls} Maps API calls this session`;
+    const sub   = type === 'cost'
+        ? `${calls} requests · ~$${cost.toFixed(3)} estimated`
+        : `~$${cost.toFixed(3)} estimated cost`;
+
+    toast.innerHTML = `
+        <span class="api-toast-icon">${icon}</span>
+        <div class="api-toast-body">
+            <div class="api-toast-title">${title}</div>
+            <div class="api-toast-sub">${sub}</div>
+        </div>
+        <button class="api-toast-close" aria-label="Dismiss">✕</button>
+    `;
+
+    toast.querySelector('.api-toast-close').addEventListener('click', () => dismissToast(toast));
+
+    container.appendChild(toast);
+    // Trigger CSS enter animation
+    requestAnimationFrame(() => toast.classList.add('api-toast-visible'));
+
+    // Auto-dismiss after 8 s
+    setTimeout(() => dismissToast(toast), 8000);
+}
+
+function dismissToast(toast) {
+    toast.classList.remove('api-toast-visible');
+    toast.classList.add('api-toast-leaving');
+    toast.addEventListener('transitionend', () => toast.remove(), { once: true });
+}
+
 function escapeHtml(str) {
     if (!str) return '';
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
