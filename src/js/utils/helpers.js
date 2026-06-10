@@ -124,3 +124,23 @@ export function subtractMinutesFromTime(timeStr, minutes) {
 export function generateId() {
     return `id-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
+
+/**
+ * Extract the city from an Israeli address.
+ * Israeli addresses follow the pattern "street_name number city_name",
+ * so the city is everything after the last numeric token.
+ *
+ * Examples:
+ *   "דיזינגוף 214 תל אביב"   → "תל אביב"
+ *   "טרומפלדור 10 כפר סבא"   → "כפר סבא"
+ *   "הירשנברג 19 תל אביב"    → "תל אביב"
+ *
+ * Returns an empty string for addresses that don't match the pattern
+ * (e.g. English destination names), which safely disables the city
+ * constraint for those passengers.
+ */
+export function extractCity(address) {
+    if (!address) return '';
+    const match = address.match(/\d+\s+(.+)$/);
+    return match ? match[1].trim() : '';
+}

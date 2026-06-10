@@ -21,11 +21,11 @@ export { evaluateDelay };
  * @param {string} mainTime - Main arrival time (HH:MM)
  * @param {function} onProgress - Callback for progress updates
  * @param {object} [options] - Algorithm options
- * @param {string} [options.mode='auto'] - 'greedy', 'smart', or 'auto' (auto-selects based on bucket size)
+ * @param {string} [options.mode='smart'] - 'greedy', 'smart', or 'auto' (auto-selects based on bucket size)
  * @returns {Promise<{taxis: Array, errors: Array, meta?: object}>}
  */
 export async function calculateRoutes(passengers, destination, mainTime, onProgress, options = {}) {
-    const { mode = 'auto' } = options;
+    const { mode = 'smart' } = options;
     const taxis = [];
     const errors = [];
     let taxiCounter = 0;
