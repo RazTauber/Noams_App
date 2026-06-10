@@ -1,5 +1,5 @@
 import { ALGORITHM_CONFIG } from '../utils/constants.js';
-import { groupByTimeBucket, subtractMinutesFromTime } from '../utils/helpers.js';
+import { groupByTimeBucket, subtractMinutesFromTime, extractCity } from '../utils/helpers.js';
 import { getBatchTravelTimes, getRouteDuration, getAllPairTravelTimes } from './mapsService.js';
 import { enumerateValidGroups, solveOptimalGrouping } from './optimizer.js';
 import { evaluateDelay } from './delayEvaluator.js';
@@ -397,7 +397,7 @@ async function buildTaxisFromSavedGrouping(savedGrouping, passengers, destinatio
  * Greedy matching algorithm for a single time bucket.
  */
 async function greedyMatch(passengers, destination, arrivalDate, bucketTime, onProgress) {
-    const { MAX_PASSENGERS_PER_TAXI } = ALGORITHM_CONFIG;
+    const { MAX_PASSENGERS_PER_TAXI, CROSS_CITY_MAX_DELAY } = ALGORITHM_CONFIG;
     const assigned = new Set();
     const taxis = [];
 
@@ -408,12 +408,36 @@ async function greedyMatch(passengers, destination, arrivalDate, bucketTime, onP
         if (assigned.has(i)) continue;
 
         const anchor = passengers[i];
+        const anchorCity = extractCity(anchor.address);
         const taxiGroup = [{ ...anchor, delay: 0 }];
         assigned.add(i);
 
-        console.group(`  Anchor [${i}] ${anchor.name} (${anchor.directTime?.toFixed(1)} min)`);
+        console.group(`  Anchor [${i}] ${anchor.name} (${anchor.directTime?.toFixed(1)} min) [${anchorCity || 'unknown city'}]`);
 
+        // Collect unassigned candidates and sort same-city before cross-city.
+        // Within each city group, the existing directTime order is preserved
+        // (JS sort is stable), so the cheapest same-city candidate is always
+        // tested first.
+        const candidateIndices = [];
         for (let j = i + 1; j < passengers.length; j++) {
+            if (!assigned.has(j)) candidateIndices.push(j);
+        }
+        if (anchorCity) {
+            candidateIndices.sort((a, b) => {
+                const aCity = extractCity(passengers[a].address);
+                const bCity = extractCity(passengers[b].address);
+                const aScore = aCity === anchorCity ? 0 : 1;
+                const bScore = bCity === anchorCity ? 0 : 1;
+                return aScore - bScore;
+            });
+            const sameCityCount = candidateIndices.filter(j => extractCity(passengers[j].address) === anchorCity).length;
+            const crossCityCount = candidateIndices.length - sameCityCount;
+            if (crossCityCount > 0) {
+                console.log(`  Candidates reordered: ${sameCityCount} same-city [${anchorCity}] first, ${crossCityCount} cross-city last`);
+            }
+        }
+
+        for (const j of candidateIndices) {
             if (assigned.has(j)) continue;
             if (taxiGroup.length >= MAX_PASSENGERS_PER_TAXI) {
                 console.log(`    Full (${MAX_PASSENGERS_PER_TAXI} pax max) — stop looking`);
@@ -421,6 +445,8 @@ async function greedyMatch(passengers, destination, arrivalDate, bucketTime, onP
             }
 
             const candidate = passengers[j];
+            const candidateCity = extractCity(candidate.address);
+            const isCrossCity = anchorCity && candidateCity && anchorCity !== candidateCity;
             const timeDiff = Math.abs(candidate.directTime - anchor.directTime);
 
             if (timeDiff > ALGORITHM_CONFIG.HARD_CAP_MINUTES) {
@@ -434,7 +460,7 @@ async function greedyMatch(passengers, destination, arrivalDate, bucketTime, onP
                 destination,
             ];
 
-            console.log(`    [${j}] ${candidate.name}: testing route ${waypoints.join(' → ')}`);
+            console.log(`    [${j}] ${candidate.name} [${candidateCity || 'unknown city'}]${isCrossCity ? ' ⚠️ cross-city' : ''}: testing route ${waypoints.join(' → ')}`);
             const routeResult = await getRouteDuration(waypoints, arrivalDate);
 
             if (routeResult.status !== 'OK' || routeResult.totalDuration === null) {
@@ -448,12 +474,20 @@ async function greedyMatch(passengers, destination, arrivalDate, bucketTime, onP
             );
             const additionalDelay = routeResult.totalDuration - maxDirectTime;
 
+            // Geographic constraint: passengers from different cities require a
+            // route detour that is almost always too costly. Enforce a strict cap
+            // before running the normal per-passenger delay evaluation.
+            if (isCrossCity && additionalDelay > CROSS_CITY_MAX_DELAY) {
+                console.log(`    [${j}] ⛔ ${candidate.name} — cross-city [${anchorCity} → ${candidateCity}] delay=${additionalDelay.toFixed(1)} min > cross-city cap=${CROSS_CITY_MAX_DELAY} min`);
+                continue;
+            }
+
             let allApproved = true;
             const delayEvals = [];
             for (const existing of taxiGroup) {
                 const personalDelay = routeResult.totalDuration - existing.directTime;
                 const evaluation = evaluateDelay(existing.directTime, Math.max(0, personalDelay));
-                delayEvals.push({ name: existing.name, delay: personalDelay.toFixed(1), approved: evaluation.approved, threshold: evaluation.threshold });
+                delayEvals.push({ name: existing.name, delay: personalDelay.toFixed(1), approved: evaluation.approved, reason: evaluation.reason });
                 if (!evaluation.approved) {
                     allApproved = false;
                     break;
@@ -465,7 +499,7 @@ async function greedyMatch(passengers, destination, arrivalDate, bucketTime, onP
 
             console.log(`    [${j}] ${candidate.name}: route=${routeResult.totalDuration.toFixed(1)} min, addlDelay=${additionalDelay.toFixed(1)} min`);
             console.log(`      Existing pax delay check:`, delayEvals);
-            console.log(`      Candidate delay: ${candidateDelay.toFixed(1)} min, approved=${candidateEval.approved} (threshold=${candidateEval.threshold})`);
+            console.log(`      Candidate delay: ${candidateDelay.toFixed(1)} min, approved=${candidateEval.approved} (reason=${candidateEval.reason})`);
 
             if (allApproved && candidateEval.approved) {
                 assigned.add(j);

@@ -7,6 +7,10 @@ export const ALGORITHM_CONFIG = {
     DELAY_PERCENTAGE_LIMIT: 0.4,    // 40% of direct travel time
     MIN_GRACE_MINUTES: 10,          // always allow up to 10 min
     HARD_CAP_MINUTES: 25,           // never exceed 25 min delay
+    CROSS_CITY_MAX_DELAY: 5,        // stricter cap (min) for cross-city pairs —
+                                    // passengers from different cities require a
+                                    // geographic detour that only pays off if the
+                                    // added delay is very small
 };
 
 export const COLUMN_MAPPINGS = {
