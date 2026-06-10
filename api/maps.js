@@ -63,12 +63,14 @@ const MAPS_URLS = {
     directions: 'https://maps.googleapis.com/maps/api/directions/json',
 };
 
-export default async function handler(req) {
+export default async function handler(req, env) {
     if (req.method !== 'POST') {
         return new Response('Method not allowed', { status: 405 });
     }
 
-    const API_KEY = process.env.GOOGLE_MAPS_API_KEY;
+    // env is passed by the Cloudflare Worker entry; fall back to process.env for
+    // Vercel Edge and local dev-server which don't pass it explicitly.
+    const API_KEY = env?.GOOGLE_MAPS_API_KEY ?? process.env.GOOGLE_MAPS_API_KEY;
     if (!API_KEY) {
         return Response.json(
             { error: 'GOOGLE_MAPS_API_KEY not configured on server' },

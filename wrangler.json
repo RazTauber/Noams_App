@@ -2,7 +2,9 @@
   "name": "production-taxi-router",
   "compatibility_date": "2025-01-01",
   "compatibility_flags": ["nodejs_compat"],
+  "main": "worker.js",
   "assets": {
-    "directory": "./dist"
+    "directory": "./dist",
+    "binding": "ASSETS"
   }
 }
