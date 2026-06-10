@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Taxi Routing System - Productions</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 20px; background-color: #f4f6f8; color: #333; }
+        .container { max-width: 900px; margin: 0 auto; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 20px; border: 1px solid #e1e4e8; }
+        h2 { margin-top: 0; font-size: 1.2rem; color: #0056b3; border-bottom: 2px solid #e1e4e8; padding-bottom: 10px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input[type="text"], input[type="time"], input[type="file"] { width: 100%; max-width: 300px; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        button { background: #007bff; color: white; cursor: pointer; border: none; font-weight: bold; padding: 10px 15px; border-radius: 4px; transition: background 0.2s; }
+        button:hover { background: #0056b3; }
+        .btn-success { background: #28a745; font-size: 1.1rem; width: 100%; margin-top: 20px; }
+        .btn-success:hover { background: #218838; }
+        .btn-danger { background: #dc3545; padding: 5px 10px; font-size: 0.9rem; }
+        .btn-danger:hover { background: #c82333; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; background: white; }
+        th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
+        th { background-color: #f8f9fa; }
+        td input[type="text"] { width: 90%; border: none; background: transparent; border-bottom: 1px solid #ddd; border-radius: 0; padding: 4px; }
+        td input[type="text"]:focus { outline: none; border-bottom: 2px solid #007bff; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <h2>1. General Shooting Day Settings</h2>
+            <div class="form-group">
+                <label>Set Address (Final Destination):</label>
+                <input type="text" id="setAddress" placeholder="e.g.: Herzliya Studios, HaKesem 1, Herzliya">
+            </div>
+            <div class="form-group">
+                <label>Main Arrival Time to Set:</label>
+                <input type="time" id="setTime" value="06:30">
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>2. Upload Passenger List (Excel)</h2>
+            <p style="font-size: 0.9rem; color: #666;">The file should include the following columns: <strong>Full Name | Pickup Address | Special Taxi | Exception Time</strong></p>
+            <input type="file" id="excelFile" accept=".xlsx, .xls">
+        </div>
+
+        <div class="card" id="editSection" style="display:none;">
+            <h2>3. Edit & Confirm Data</h2>
+            <p style="font-size: 0.9rem; color: #666;">You can correct addresses and mark exceptions directly here before calculation.</p>
+            <div style="overflow-x: auto;">
+                <table id="passengersTable">
+                    <thead>
+                        <tr>
+                            <th>Full Name</th>
+                            <th>Pickup Address (City, Street, Number)</th>
+                            <th style="text-align: center;">Special Taxi?</th>
+                            <th>Arrival Time (Exception)</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        </tbody>
+                </table>
+            </div>
+            <button id="calculateBtn" class="btn-success">Calculate Taxi Routes</button>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('excelFile').addEventListener('change', handleFile);
+        let passengersData = [];
+
+        function handleFile(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const data = new Uint8Array(event.target.result);
+                const workbook = XLSX.read(data, {type: 'array'});
+                const firstSheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[firstSheetName];
+                
+                passengersData = XLSX.utils.sheet_to_json(worksheet);
+                renderTable();
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function renderTable() {
+            const tbody = document.querySelector('#passengersTable tbody');
+            tbody.innerHTML = '';
+            
+            passengersData.forEach((row, index) => {
+                const name = row['Full Name'] || row['name'] || '';
+                const address = row['Pickup Address'] || row['address'] || '';
+                const isSpecial = row['Special Taxi'] === 'Yes' || row['Special Taxi'] === 'yes';
+                const exceptionTime = row['Exception Time'] || row['time'] || '';
+
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><input type="text" value="${name}" data-index="${index}" data-field="name"></td>
+                    <td><input type="text" value="${address}" data-index="${index}" data-field="address"></td>
+                    <td style="text-align: center;"><input type="checkbox" ${isSpecial ? 'checked' : ''} data-index="${index}" data-field="isSpecial"></td>
+                    <td><input type="time" value="${exceptionTime}" data-index="${index}" data-field="time"></td>
+                    <td style="text-align: center;"><button class="btn-danger" onclick="removeRow(${index})">Remove</button></td>
+                `;
+                tbody.appendChild(tr);
+            });
+            
+            document.getElementById('editSection').style.display = 'block';
+        }
+
+        function removeRow(index) {
+            passengersData.splice(index, 1);
+            renderTable();
+        }
+
+        document.getElementById('calculateBtn').addEventListener('click', () => {
+            const setAddress = document.getElementById('setAddress').value;
+            const setTime = document.getElementById('setTime').value;
+            
+            if (!setAddress) {
+                alert('You must enter the set address!');
+                return;
+            }
+
+            alert('Great! Data collected. In the next step we will connect to Google Maps (Distance Matrix) and run our routing algorithm.');
+        });
+    </script>
+</body>
+</html>

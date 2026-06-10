@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Taxi Routing System - Productions</title>
+    <link rel="stylesheet" href="./styles/main.css">
+</head>
+<body>
+    <div class="container">
+        <header class="app-header">
+            <h1>Taxi Routing System</h1>
+            <p>Save time and transportation costs for shooting days</p>
+        </header>
+
+        <!-- Step 1: Settings -->
+        <section class="card" id="settingsSection">
+            <h2 class="card-title">
+                <span class="step-number">1</span>
+                Shooting Day Settings
+            </h2>
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="setAddress">Set Address (Final Destination)</label>
+                    <input type="text" id="setAddress" placeholder="e.g.: Herzliya Studios, HaKesem 1">
+                </div>
+                <div class="form-group">
+                    <label for="setTime">Main Arrival Time</label>
+                    <input type="time" id="setTime" value="06:30">
+                </div>
+            </div>
+        </section>
+
+        <!-- Step 2: Upload -->
+        <section class="card" id="uploadSection">
+            <h2 class="card-title">
+                <span class="step-number">2</span>
+                Upload Passenger List
+            </h2>
+            <p class="card-subtitle">
+                The file should include: <strong>Full Name</strong> | <strong>Pickup Address</strong> | <strong>Special Taxi</strong> (Yes/No) | <strong>Exception Time</strong> (optional)
+            </p>
+            <button class="btn-template-download" id="downloadTemplateBtn">
+                Download Sample File (CSV)
+            </button>
+            <div class="upload-zone" id="uploadZone">
+                <div class="upload-zone-icon">📄</div>
+                <div class="upload-zone-text">
+                    <strong>Drag an Excel file here</strong><br>
+                    or click to choose a file
+                </div>
+            </div>
+            <input type="file" id="excelFile" accept=".xlsx,.xls,.csv">
+        </section>
+
+        <!-- Step 3: Edit & Review -->
+        <section class="card hidden" id="editSection">
+            <h2 class="card-title">
+                <span class="step-number">3</span>
+                Edit & Confirm Data
+            </h2>
+            <p class="card-subtitle">You can correct addresses, mark special taxis, or remove passengers before calculation.</p>
+
+            <div id="statusMessage" class="status-message"></div>
+
+            <div class="table-wrapper">
+                <table id="passengersTable">
+                    <thead>
+                        <tr>
+                            <th>Full Name</th>
+                            <th>Pickup Address</th>
+                            <th style="text-align: center;">Special</th>
+                            <th>Exception Time</th>
+                            <th style="text-align: center;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="passengersBody"></tbody>
+                </table>
+            </div>
+
+            <button class="btn-success" id="calculateBtn">
+                Calculate Taxi Routes
+            </button>
+        </section>
+
+        <!-- Step 4+5: Results -->
+        <section class="card results-section" id="resultsSection">
+            <h2 class="card-title">
+                <span class="step-number">4</span>
+                Routing Results
+            </h2>
+            <p class="card-subtitle">Click "Separate" to move a passenger to their own taxi, or "Merge" to combine two taxis. The system will recalculate automatically.</p>
+
+            <div id="resultsStatus" class="status-message"></div>
+            <div class="taxi-cards-grid" id="taxiCardsGrid"></div>
+        </section>
+
+        <!-- Step 6: Export -->
+        <section class="card results-section" id="exportSection">
+            <h2 class="card-title">
+                <span class="step-number">5</span>
+                Export Results
+            </h2>
+            <div class="export-buttons">
+                <button class="btn-primary" id="exportExcelBtn">
+                    Export Excel (for production management)
+                </button>
+                <button class="btn-outline" id="exportPdfBtn">
+                    Print to PDF (for transportation company)
+                </button>
+            </div>
+        </section>
+    </div>
+
+    <script type="module" src="./js/main.js"></script>
+</body>
+</html>
