@@ -18,6 +18,8 @@ import { loadPairMatrix, savePairMatrix } from './groupMemoryService.js';
 
 let apiCallCounter = 0;
 let proxyAvailable = null; // null = unchecked, true/false after first attempt
+let proxyFailedAt = 0;     // timestamp of last proxy failure
+const PROXY_RETRY_INTERVAL_MS = 30_000; // retry proxy after 30 seconds
 
 // ── Cost & milestone tracking ─────────────────────────────────────────────────
 // Pricing: Distance Matrix $5/1000 elements, Directions $5/1000 requests
@@ -78,10 +80,17 @@ function checkMilestones(callCost) {
  * Returns true if the server-side proxy responded successfully.
  * Falls back gracefully to mock mode when running with plain `vite dev`
  * (no proxy) or when GOOGLE_MAPS_API_KEY is not set on the server.
+ *
+ * After a failure, retries are allowed after PROXY_RETRY_INTERVAL_MS so
+ * a transient 503 doesn't permanently latch the client into mock mode.
  */
 export function isApiConfigured() {
-    // After the first real call we know; before that assume configured
-    // so the app attempts the proxy and discovers availability naturally.
+    if (proxyAvailable === false && proxyFailedAt > 0) {
+        if (Date.now() - proxyFailedAt >= PROXY_RETRY_INTERVAL_MS) {
+            proxyAvailable = null;
+            console.log('[MAPS] ♻️ Proxy retry window reached — will attempt real API again');
+        }
+    }
     return proxyAvailable !== false;
 }
 
@@ -126,6 +135,7 @@ async function callProxy(type, params) {
         console.warn(`  ❌ Network error — proxy unreachable:`, err.message);
         console.groupEnd();
         proxyAvailable = false;
+        proxyFailedAt = Date.now();
         throw new Error('Proxy unreachable');
     }
 
@@ -134,10 +144,12 @@ async function callProxy(type, params) {
         console.groupEnd();
         if (response.status === 503) {
             proxyAvailable = false;
+            proxyFailedAt = Date.now();
             throw new Error('GOOGLE_MAPS_API_KEY not configured on server');
         }
         if (response.status === 502 || response.status === 504) {
             proxyAvailable = false;
+            proxyFailedAt = Date.now();
             throw new Error('Proxy server unavailable');
         }
         throw new Error(`Proxy HTTP error: ${response.status}`);
@@ -149,7 +161,10 @@ async function callProxy(type, params) {
     if (data.error) {
         console.warn(`  ❌ Proxy error: ${data.error}`);
         console.groupEnd();
-        if (data.error.includes('GOOGLE_MAPS_API_KEY')) proxyAvailable = false;
+        if (data.error.includes('GOOGLE_MAPS_API_KEY')) {
+            proxyAvailable = false;
+            proxyFailedAt = Date.now();
+        }
         throw new Error(`Proxy error: ${data.error}`);
     }
 
@@ -190,6 +205,7 @@ async function callProxy(type, params) {
     console.groupEnd();
 
     proxyAvailable = true;
+    proxyFailedAt = 0;
     checkMilestones(callCost);
     return data;
 }

@@ -6,7 +6,14 @@ let solverInstance = null;
 
 async function getSolver() {
     if (!solverInstance) {
-        solverInstance = await highs();
+        solverInstance = await highs({
+            locateFile: (file) => {
+                if (file.endsWith('.wasm')) {
+                    return '/highs.wasm';
+                }
+                return file;
+            },
+        });
     }
     return solverInstance;
 }

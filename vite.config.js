@@ -1,17 +1,43 @@
 import { defineConfig } from 'vite';
+import { copyFileSync, existsSync, mkdirSync } from 'fs';
+import { resolve } from 'path';
+
+function copyHighsWasm() {
+  return {
+    name: 'copy-highs-wasm',
+    buildStart() {
+      const src = resolve(__dirname, 'node_modules/highs/build/highs.wasm');
+      const destDir = resolve(__dirname, 'src/public');
+      const dest = resolve(destDir, 'highs.wasm');
+      if (existsSync(src) && !existsSync(dest)) {
+        mkdirSync(destDir, { recursive: true });
+        copyFileSync(src, dest);
+      }
+    },
+    writeBundle() {
+      const src = resolve(__dirname, 'node_modules/highs/build/highs.wasm');
+      const destDir = resolve(__dirname, 'dist');
+      const dest = resolve(destDir, 'highs.wasm');
+      if (existsSync(src) && !existsSync(dest)) {
+        copyFileSync(src, dest);
+      }
+    },
+  };
+}
 
 export default defineConfig({
-  plugins: [],
+  plugins: [copyHighsWasm()],
   root: 'src',
+  envDir: '..',
   build: {
     outDir: '../dist',
     emptyOutDir: true,
   },
+  optimizeDeps: {
+    exclude: ['highs'],
+  },
   server: {
     open: true,
-    // Proxy /api calls to Vercel dev server when running `vercel dev`.
-    // If you run plain `vite dev` the proxy 404s and mapsService.js
-    // automatically falls back to mock mode — no real API calls are made.
     proxy: {
       '/api': {
         target: 'http://localhost:3000',
