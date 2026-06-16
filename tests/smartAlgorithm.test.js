@@ -1,7 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { estimateGroupRoute, enumerateValidGroups, solveOptimalGrouping } from '../src/js/services/optimizer.js';
 import { evaluateDelay } from '../src/js/services/delayEvaluator.js';
-import { calculateRoutes } from '../src/js/services/routingAlgorithm.js';
 
 describe('Smart Algorithm - estimateGroupRoute', () => {
 
@@ -190,9 +189,69 @@ describe('Smart Algorithm - delay compliance', () => {
     });
 });
 
-describe('Smart Algorithm - end-to-end with mock API', () => {
+describe('Smart Algorithm - end-to-end with mocked API', () => {
+    function seedDuration(origin, destination) {
+        const seed = (origin + destination).split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+        const pseudoRandom = ((seed * 9301 + 49297) % 233280) / 233280;
+        return Math.round((10 + pseudoRandom * 50) * 10) / 10;
+    }
+
+    beforeEach(() => {
+        vi.resetModules();
+        vi.doMock('../src/js/services/mapsService.js', () => ({
+            getApiCallCount: () => 0,
+            getCumulativeCost: () => 0,
+            resetApiCallCount: () => {},
+            onApiMilestone: () => {},
+            getBatchTravelTimes: vi.fn(async (origins, destination) =>
+                origins.map(origin => ({ duration: seedDuration(origin, destination), status: 'OK' }))
+            ),
+            getRouteDuration: vi.fn(async (waypoints) => {
+                const dest = waypoints[waypoints.length - 1];
+                const pickups = waypoints.slice(0, -1);
+                const directTimes = pickups.map(p => seedDuration(p, dest));
+                const maxDirect = Math.max(...directTimes);
+                const detour = 5 * (pickups.length - 1);
+                const totalDuration = Math.round((maxDirect + detour) * 10) / 10;
+                const legDurations = [];
+                if (pickups.length === 1) {
+                    legDurations.push(totalDuration);
+                } else {
+                    for (let i = 0; i < pickups.length - 1; i++) {
+                        legDurations.push(Math.round(detour / (pickups.length - 1) * 10) / 10);
+                    }
+                    const usedByLegs = legDurations.reduce((s, d) => s + d, 0);
+                    legDurations.push(Math.round((totalDuration - usedByLegs) * 10) / 10);
+                }
+                return { totalDuration, legDurations, status: 'OK' };
+            }),
+            getAllPairTravelTimes: vi.fn(async (addresses) => {
+                const n = addresses.length;
+                const matrix = Array.from({ length: n }, () => new Array(n).fill(0));
+                for (let i = 0; i < n; i++) {
+                    for (let j = 0; j < n; j++) {
+                        if (i !== j) matrix[i][j] = seedDuration(addresses[i], addresses[j]);
+                    }
+                }
+                return matrix;
+            }),
+        }));
+        vi.doMock('../src/js/services/groupMemoryService.js', () => ({
+            lookupGrouping: vi.fn(async () => null),
+            saveGrouping: vi.fn(async () => {}),
+            loadPairMatrix: vi.fn(async (addrs) => {
+                const n = addrs.length;
+                return Array.from({ length: n }, () => new Array(n).fill(null));
+            }),
+            savePairMatrix: vi.fn(async () => {}),
+            harvestLegsToDb: vi.fn(async () => {}),
+            normalizeAddress: (addr) => addr.trim().toLowerCase().replace(/\s+/g, ' '),
+            isDbConfigured: () => false,
+        }));
+    });
 
     it('smart mode produces fewer or equal taxis compared to greedy', async () => {
+        const { calculateRoutes } = await import('../src/js/services/routingAlgorithm.js');
         const passengers = [
             { id: 'p1', name: 'Avi', address: 'Tel Aviv, Dizengoff 100', isSpecial: false, arrivalTime: '' },
             { id: 'p2', name: 'Bat', address: 'Tel Aviv, Rothschild 50', isSpecial: false, arrivalTime: '' },
@@ -216,6 +275,7 @@ describe('Smart Algorithm - end-to-end with mock API', () => {
     }, 30000);
 
     it('smart mode assigns all passengers with valid pickup times', async () => {
+        const { calculateRoutes } = await import('../src/js/services/routingAlgorithm.js');
         const passengers = [
             { id: 'p1', name: 'A', address: 'Addr1', isSpecial: false, arrivalTime: '' },
             { id: 'p2', name: 'B', address: 'Addr2', isSpecial: false, arrivalTime: '' },
@@ -236,6 +296,7 @@ describe('Smart Algorithm - end-to-end with mock API', () => {
     }, 30000);
 
     it('handles special passengers identically in both modes', async () => {
+        const { calculateRoutes } = await import('../src/js/services/routingAlgorithm.js');
         const passengers = [
             { id: 'p1', name: 'Special', address: 'SpecialAddr', isSpecial: true, arrivalTime: '' },
             { id: 'p2', name: 'Regular', address: 'RegularAddr', isSpecial: false, arrivalTime: '' },

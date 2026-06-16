@@ -95,13 +95,16 @@ export function renderTaxiCards(taxis, onSeparate, onMerge, onRefine) {
         else if (taxiHasEstimates) card.style.borderColor = 'var(--warning-color)';
         if (mergeSelectedTaxiId === taxi.id) card.classList.add('taxi-card-merge-selected');
 
+        const taxiHasNoTraffic = taxi.passengers.length > 1 && taxi.passengers.some(p => p.noTrafficData);
         const statusTag = taxi.isSpecial ? ' (Special)' : taxi.hasError ? ' (Error - Address)' : taxiHasEstimates ? ' (~Estimated)' : '';
         const canMerge = !taxi.isSpecial && !taxi.hasError;
         const isMergeTarget = mergeSelectedTaxiId && mergeSelectedTaxiId !== taxi.id && canMerge;
 
-        const passengersHtml = taxi.passengers.map(p => {
+        const passengersHtml = taxi.passengers.map((p, pIdx) => {
             const delayClass = p.delay === null ? '' : p.delay <= 5 ? 'delay-ok' : p.delay <= 12 ? 'delay-warning' : 'delay-danger';
-            const delayText = p.delay === null ? '—' : formatDelay(p.delay);
+            const isShared = taxi.passengers.length > 1 && !taxi.isSpecial;
+            const isLastPickup = pIdx === taxi.passengers.length - 1;
+            const delayText = p.delay === null ? '—' : formatDelay(p.delay, { isSharedNonLast: isShared && !isLastPickup });
             const pickupTimeText = p.isEstimated ? `~${p.pickupTime || '—'}` : (p.pickupTime || '—');
             const showSeparate = taxi.passengers.length > 1 && !taxi.isSpecial;
 
@@ -111,7 +114,7 @@ export function renderTaxiCards(taxis, onSeparate, onMerge, onRefine) {
                         <div class="taxi-passenger-name">${escapeHtml(p.name)}${p.phone ? ` <span class="taxi-passenger-phone">${escapeHtml(p.phone)}</span>` : ''}</div>
                         <div class="taxi-passenger-address">${escapeHtml(p.address)}</div>
                     </div>
-                    <span class="taxi-passenger-pickup">${pickupTimeText}</span>
+                    <span class="taxi-passenger-pickup" ${p.noTrafficData ? 'title="Pickup time estimated via Distance Matrix (no live route traffic)"' : ''}>${pickupTimeText}${p.noTrafficData ? ' *' : ''}</span>
                     <span class="taxi-passenger-delay ${delayClass}">${delayText}</span>
                     ${showSeparate ? `<button class="btn-danger btn-separate" data-taxi="${taxi.id}" data-passenger="${p.id}">Separate</button>` : ''}
                 </div>

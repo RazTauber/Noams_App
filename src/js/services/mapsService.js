@@ -18,9 +18,6 @@ import { loadPairMatrix, savePairMatrix, harvestLegsToDb } from './groupMemorySe
 import { ALGORITHM_CONFIG } from '../utils/constants.js';
 
 let apiCallCounter = 0;
-let proxyAvailable = null; // null = unchecked, true/false after first attempt
-let proxyFailedAt = 0;     // timestamp of last proxy failure
-const PROXY_RETRY_INTERVAL_MS = 30_000; // retry proxy after 30 seconds
 
 // ── Cost & milestone tracking ─────────────────────────────────────────────────
 // Pricing: Distance Matrix $5/1000 elements, Directions $5/1000 requests
@@ -78,27 +75,8 @@ function checkMilestones(callCost) {
 }
 
 /**
- * Returns true if the server-side proxy responded successfully.
- * Falls back gracefully to mock mode when running with plain `vite dev`
- * (no proxy) or when GOOGLE_MAPS_API_KEY is not set on the server.
- *
- * After a failure, retries are allowed after PROXY_RETRY_INTERVAL_MS so
- * a transient 503 doesn't permanently latch the client into mock mode.
- */
-export function isApiConfigured() {
-    if (proxyAvailable === false && proxyFailedAt > 0) {
-        if (Date.now() - proxyFailedAt >= PROXY_RETRY_INTERVAL_MS) {
-            proxyAvailable = null;
-            console.log('[MAPS] ♻️ Proxy retry window reached — will attempt real API again');
-        }
-    }
-    return proxyAvailable !== false;
-}
-
-/**
  * POST to the /api/maps proxy with the given type and params.
  * Returns the parsed JSON from Google Maps, or throws on error.
- * Sets proxyAvailable based on whether the call succeeded.
  * Tracks cost and fires milestone notifications after each successful call.
  */
 async function callProxy(type, params) {
@@ -135,8 +113,6 @@ async function callProxy(type, params) {
     } catch (err) {
         console.warn(`  ❌ Network error — proxy unreachable:`, err.message);
         console.groupEnd();
-        proxyAvailable = false;
-        proxyFailedAt = Date.now();
         throw new Error('Proxy unreachable');
     }
 
@@ -144,13 +120,9 @@ async function callProxy(type, params) {
         console.warn(`  ❌ HTTP ${response.status}`);
         console.groupEnd();
         if (response.status === 503) {
-            proxyAvailable = false;
-            proxyFailedAt = Date.now();
             throw new Error('GOOGLE_MAPS_API_KEY not configured on server');
         }
         if (response.status === 502 || response.status === 504) {
-            proxyAvailable = false;
-            proxyFailedAt = Date.now();
             throw new Error('Proxy server unavailable');
         }
         throw new Error(`Proxy HTTP error: ${response.status}`);
@@ -162,10 +134,6 @@ async function callProxy(type, params) {
     if (data.error) {
         console.warn(`  ❌ Proxy error: ${data.error}`);
         console.groupEnd();
-        if (data.error.includes('GOOGLE_MAPS_API_KEY')) {
-            proxyAvailable = false;
-            proxyFailedAt = Date.now();
-        }
         throw new Error(`Proxy error: ${data.error}`);
     }
 
@@ -205,8 +173,6 @@ async function callProxy(type, params) {
 
     console.groupEnd();
 
-    proxyAvailable = true;
-    proxyFailedAt = 0;
     checkMilestones(callCost);
     return data;
 }
@@ -222,12 +188,6 @@ async function callProxy(type, params) {
  */
 export async function getTravelTime(origin, destination, arrivalTime) {
     console.log(`[MAPS] getTravelTime: "${origin}" → "${destination}" @ ${arrivalTime.toLocaleTimeString()}`);
-
-    if (!isApiConfigured()) {
-        const mock = getMockTravelTime(origin, destination);
-        console.log(`[MAPS]   → MOCK result: ${mock.duration?.toFixed(1)} min`);
-        return mock;
-    }
 
     const arrivalTimestamp = Math.floor(arrivalTime.getTime() / 1000);
 
@@ -260,11 +220,6 @@ export async function getTravelTime(origin, destination, arrivalTime) {
         console.log(`[MAPS]   → raw=${rawMinutes.toFixed(1)} → buffered=${duration.toFixed(1)} min`);
         return { duration, status: 'OK' };
     } catch (error) {
-        if (proxyAvailable === false) {
-            const mock = getMockTravelTime(origin, destination);
-            console.log(`[MAPS]   → MOCK fallback: ${mock.duration?.toFixed(1)} min`);
-            return mock;
-        }
         if (error.message.includes('API')) throw error;
         console.warn(`[MAPS]   → NETWORK_ERROR:`, error.message);
         return { duration: null, status: 'NETWORK_ERROR' };
@@ -281,13 +236,6 @@ export async function getTravelTime(origin, destination, arrivalTime) {
  */
 export async function getBatchTravelTimes(origins, destination, arrivalTime) {
     console.group(`[MAPS] getBatchTravelTimes — ${origins.length} origins → "${destination}" @ ${arrivalTime.toLocaleTimeString()}`);
-
-    if (!isApiConfigured()) {
-        const mocks = origins.map(origin => getMockTravelTime(origin, destination));
-        console.log(`  → All MOCK results:`, mocks.map((m, i) => `${origins[i]}: ${m.duration?.toFixed(1)} min`));
-        console.groupEnd();
-        return mocks;
-    }
 
     const arrivalHour = arrivalTime.getHours();
     const results = new Array(origins.length);
@@ -362,14 +310,6 @@ export async function getBatchTravelTimes(origins, destination, arrivalTime) {
         console.groupEnd();
         return results;
     } catch (error) {
-        if (proxyAvailable === false) {
-            for (const idx of uncachedIndices) {
-                results[idx] = getMockTravelTime(origins[idx], destination);
-                console.log(`  [${idx}] MOCK fallback: ${results[idx].duration?.toFixed(1)} min`);
-            }
-            console.groupEnd();
-            return results;
-        }
         if (error.message.includes('API')) { console.groupEnd(); throw error; }
         for (const idx of uncachedIndices) {
             results[idx] = { duration: null, status: 'NETWORK_ERROR' };
@@ -392,13 +332,6 @@ export async function getRouteDuration(waypoints, arrivalTime) {
 
     console.group(`[MAPS] getRouteDuration — ${waypoints.length} waypoints @ ${arrivalTime.toLocaleTimeString()}`);
     console.log(`  Route: ${waypoints.join(' → ')}`);
-
-    if (!isApiConfigured()) {
-        const mock = getMockRouteDuration(waypoints);
-        console.log(`  → MOCK: ${mock.totalDuration?.toFixed(1)} min total, legs: [${mock.legDurations.map(d => d.toFixed(1)).join(', ')}]`);
-        console.groupEnd();
-        return mock;
-    }
 
     const arrivalHour = arrivalTime.getHours();
     const cached = getCachedRouteDuration(waypoints, arrivalHour);
@@ -436,26 +369,64 @@ export async function getRouteDuration(waypoints, arrivalTime) {
 
         const buf = ALGORITHM_CONFIG.TRAVEL_TIME_BUFFER;
         const legsWithoutTraffic = data.routes[0].legs.filter(leg => !leg.duration_in_traffic);
-        if (legsWithoutTraffic.length > 0) {
-            console.warn(`[MAPS] ⚠️ ${legsWithoutTraffic.length}/${data.routes[0].legs.length} leg(s) missing traffic data — using static duration (check departure_time / traffic_model config)`);
-        }
-        const legDurations = data.routes[0].legs.map(
-            leg => ((leg.duration_in_traffic?.value || leg.duration.value) / 60) * buf
-        );
-        const rawTotalSeconds = data.routes[0].legs.reduce(
-            (sum, leg) => sum + (leg.duration_in_traffic?.value || leg.duration.value),
-            0
-        );
-        const totalDuration = (rawTotalSeconds / 60) * buf;
+        const noTrafficData = legsWithoutTraffic.length > 0;
 
-        const result = { totalDuration, legDurations, status: 'OK' };
-        console.log(`  ✅ Total: raw=${(rawTotalSeconds/60).toFixed(1)} → buffered=${totalDuration.toFixed(1)} min (×${buf}) | Legs: [${legDurations.map(d => d.toFixed(1)).join(', ')}]`);
+        let legDurations;
+        let totalDuration;
+
+        if (noTrafficData && waypoints.length > 2) {
+            // Google Directions API does NOT return duration_in_traffic
+            // with stopover waypoints — this is a documented API limitation.
+            // Fall back to per-leg Distance Matrix calls (traffic-aware).
+            console.warn(`[MAPS] ⚠️ ${legsWithoutTraffic.length}/${data.routes[0].legs.length} leg(s) missing traffic data (Directions API limitation with waypoints) — fetching per-leg traffic times via Distance Matrix`);
+
+            legDurations = await Promise.all(
+                waypoints.slice(0, -1).map((wp, i) => {
+                    const dest = waypoints[i + 1];
+                    const cached = getCachedTravelTime(wp, dest, arrivalHour);
+                    if (cached !== null && cached.duration !== null) {
+                        console.log(`    Leg ${i}: ${wp} → ${dest}: ${cached.duration.toFixed(1)} min (cache)`);
+                        return cached.duration;
+                    }
+                    return getBatchTravelTimes([wp], dest, arrivalTime)
+                        .then(results => {
+                            const dur = results[0]?.duration ?? null;
+                            if (dur !== null) {
+                                console.log(`    Leg ${i}: ${wp} → ${dest}: ${dur.toFixed(1)} min (Distance Matrix, traffic-aware)`);
+                            }
+                            return dur;
+                        });
+                })
+            );
+
+            const hasNulls = legDurations.some(d => d === null);
+            if (hasNulls) {
+                // Some legs failed — fall back to static Directions durations
+                console.warn(`  ⚠️ Some per-leg DM calls failed — falling back to static Directions durations`);
+                legDurations = data.routes[0].legs.map(
+                    leg => ((leg.duration_in_traffic?.value || leg.duration.value) / 60) * buf
+                );
+                totalDuration = legDurations.reduce((s, d) => s + d, 0);
+            } else {
+                totalDuration = legDurations.reduce((s, d) => s + d, 0);
+            }
+        } else {
+            legDurations = data.routes[0].legs.map(
+                leg => ((leg.duration_in_traffic?.value || leg.duration.value) / 60) * buf
+            );
+            const rawTotalSeconds = data.routes[0].legs.reduce(
+                (sum, leg) => sum + (leg.duration_in_traffic?.value || leg.duration.value),
+                0
+            );
+            totalDuration = (rawTotalSeconds / 60) * buf;
+        }
+
+        const result = { totalDuration, legDurations, status: 'OK', noTrafficData };
+        console.log(`  ✅ Total: ${totalDuration.toFixed(1)} min${noTrafficData ? ' (via Distance Matrix — traffic-aware)' : ` (×${buf})`} | Legs: [${legDurations.map(d => d.toFixed(1)).join(', ')}]`);
         console.groupEnd();
         cacheRouteDuration(waypoints, arrivalHour, result);
 
-        // Harvest pickup-to-pickup leg durations into the pair cache.
-        // Skip the last leg (last pickup → destination) since pair cache is
-        // exclusively for pickup-to-pickup distances used by the ILP solver.
+        // Harvest pickup-to-pickup leg durations into the pair cache
         if (waypoints.length > 2 && legDurations.length === waypoints.length - 1) {
             const harvestPairs = [];
             for (let k = 0; k < legDurations.length - 1; k++) {
@@ -475,12 +446,6 @@ export async function getRouteDuration(waypoints, arrivalTime) {
 
         return result;
     } catch (error) {
-        if (proxyAvailable === false) {
-            const mock = getMockRouteDuration(waypoints);
-            console.log(`  → MOCK fallback: ${mock.totalDuration?.toFixed(1)} min`);
-            console.groupEnd();
-            return mock;
-        }
         if (error.message.includes('API')) { console.groupEnd(); throw error; }
         console.warn(`  ❌ NETWORK_ERROR:`, error.message);
         console.groupEnd();
@@ -516,13 +481,6 @@ export async function getAllPairTravelTimes(addresses, arrivalTime) {
 
     console.group(`[MAPS] getAllPairTravelTimes — ${n}×${n} matrix (${n*n} pairs) @ ${arrivalTime.toLocaleTimeString()}`);
     console.log(`  Addresses:`, addresses);
-
-    if (!isApiConfigured()) {
-        const mock = getMockPairMatrix(addresses);
-        console.log(`  → MOCK matrix`);
-        console.groupEnd();
-        return mock;
-    }
 
     const CHUNK_SIZE = 25;
     const arrivalTimestamp = Math.floor(arrivalTime.getTime() / 1000);
@@ -594,12 +552,6 @@ export async function getAllPairTravelTimes(addresses, arrivalTime) {
         })
     );
 
-    if (proxyAvailable === false) {
-        console.log(`  → MOCK fallback for entire matrix`);
-        console.groupEnd();
-        return getMockPairMatrix(addresses);
-    }
-
     let criticalError = null;
     let filledPairs = 0;
     let failedPairs = 0;
@@ -649,59 +601,3 @@ export async function getAllPairTravelTimes(addresses, arrivalTime) {
     return matrix;
 }
 
-// ---------------------------------------------------------------------------
-// Mock implementations for local dev without a configured API key
-// ---------------------------------------------------------------------------
-
-function getMockPairMatrix(addresses) {
-    const n = addresses.length;
-    const matrix = Array.from({ length: n }, () => new Array(n).fill(0));
-    for (let i = 0; i < n; i++) {
-        for (let j = 0; j < n; j++) {
-            if (i === j) continue;
-            const seed = (addresses[i] + addresses[j]).split('').reduce((a, c) => a + c.charCodeAt(0), 0);
-            const pseudoRandom = ((seed * 9301 + 49297) % 233280) / 233280;
-            matrix[i][j] = Math.round((5 + pseudoRandom * 25) * 10) / 10;
-        }
-    }
-    return matrix;
-}
-
-function getMockRouteDuration(waypoints) {
-    const destination = waypoints[waypoints.length - 1];
-    const pickups = waypoints.slice(0, -1);
-
-    const directTimes = pickups.map(p => getMockTravelTime(p, destination).duration);
-    const maxDirect = Math.max(...directTimes);
-
-    const allPickupsStr = pickups.join('|');
-    const seed = allPickupsStr.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
-    const pseudoRandom = ((seed * 9301 + 49297) % 233280) / 233280;
-    const detourPerStop = 3 + pseudoRandom * 12;
-    const totalDetour = Math.round(detourPerStop * (pickups.length - 1) * 10) / 10;
-    const totalDuration = Math.round((maxDirect + totalDetour) * 10) / 10;
-
-    const numLegs = waypoints.length - 1;
-    const legDurations = [];
-    if (numLegs === 1) {
-        legDurations.push(totalDuration);
-    } else {
-        for (let i = 0; i < numLegs - 1; i++) {
-            const legSeed = (waypoints[i] + waypoints[i + 1]).split('').reduce((a, c) => a + c.charCodeAt(0), 0);
-            const legRandom = ((legSeed * 9301 + 49297) % 233280) / 233280;
-            const legPortion = Math.round((totalDetour * (0.3 + legRandom * 0.7) / (numLegs - 1)) * 10) / 10;
-            legDurations.push(legPortion);
-        }
-        const usedByLegs = legDurations.reduce((s, d) => s + d, 0);
-        legDurations.push(Math.round((totalDuration - usedByLegs) * 10) / 10);
-    }
-
-    return { totalDuration, legDurations, status: 'OK' };
-}
-
-function getMockTravelTime(origin, destination) {
-    const seed = (origin + destination).split('').reduce((a, c) => a + c.charCodeAt(0), 0);
-    const pseudoRandom = ((seed * 9301 + 49297) % 233280) / 233280;
-    const duration = 10 + pseudoRandom * 50;
-    return { duration: Math.round(duration * 10) / 10, status: 'OK' };
-}

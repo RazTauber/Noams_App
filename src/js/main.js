@@ -1,7 +1,7 @@
 import * as XLSX from 'xlsx';
 import { parsePassengers } from './utils/helpers.js';
 import { ALGORITHM_CONFIG } from './utils/constants.js';
-import { isApiConfigured, getApiCallCount, resetApiCallCount, onApiMilestone } from './services/mapsService.js';
+import { getApiCallCount, resetApiCallCount, onApiMilestone } from './services/mapsService.js';
 import { clearAllCaches } from './services/cacheService.js';
 import { calculateRoutes, separatePassenger, mergeTaxis, estimateMerge, estimateSeparate, refineTaxis } from './services/routingAlgorithm.js';
 import { exportToExcel, exportToPdf } from './services/exportService.js';
@@ -35,13 +35,6 @@ function init() {
     setupTemplateDownload();
 
     onApiMilestone((type, cost, calls) => showApiAlert(type, cost, calls));
-
-    if (!isApiConfigured()) {
-        console.info(
-            '%c[Dev Mode] Google Maps API key not configured. Using mock travel times.',
-            'color: #FF9500; font-weight: bold;'
-        );
-    }
 }
 
 /**

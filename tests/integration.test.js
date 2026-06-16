@@ -2,10 +2,83 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 /**
  * Integration tests verifying the full flow matches test plan T01-T12.
- * Tests that require Google Maps API are mocked.
+ * All tests mock the maps and DB services for deterministic, offline results.
  */
 
+// ─── Shared mock helpers ────────────────────────────────────────────────────
+
+function seedDuration(origin, destination) {
+    const seed = (origin + destination).split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+    const pseudoRandom = ((seed * 9301 + 49297) % 233280) / 233280;
+    return Math.round((10 + pseudoRandom * 50) * 10) / 10;
+}
+
+function mockMapsService(overrides = {}) {
+    return {
+        getApiCallCount: () => 0,
+        getCumulativeCost: () => 0,
+        resetApiCallCount: () => {},
+        onApiMilestone: () => {},
+        getBatchTravelTimes: vi.fn(async (origins, destination) =>
+            origins.map(origin => ({ duration: seedDuration(origin, destination), status: 'OK' }))
+        ),
+        getRouteDuration: vi.fn(async (waypoints) => {
+            const dest = waypoints[waypoints.length - 1];
+            const pickups = waypoints.slice(0, -1);
+            const directTimes = pickups.map(p => seedDuration(p, dest));
+            const maxDirect = Math.max(...directTimes);
+            const detour = 5 * (pickups.length - 1);
+            const totalDuration = Math.round((maxDirect + detour) * 10) / 10;
+            const legDurations = [];
+            if (pickups.length === 1) {
+                legDurations.push(totalDuration);
+            } else {
+                for (let i = 0; i < pickups.length - 1; i++) {
+                    legDurations.push(Math.round(detour / (pickups.length - 1) * 10) / 10);
+                }
+                const usedByLegs = legDurations.reduce((s, d) => s + d, 0);
+                legDurations.push(Math.round((totalDuration - usedByLegs) * 10) / 10);
+            }
+            return { totalDuration, legDurations, status: 'OK' };
+        }),
+        getAllPairTravelTimes: vi.fn(async (addresses) => {
+            const n = addresses.length;
+            const matrix = Array.from({ length: n }, () => new Array(n).fill(0));
+            for (let i = 0; i < n; i++) {
+                for (let j = 0; j < n; j++) {
+                    if (i !== j) matrix[i][j] = seedDuration(addresses[i], addresses[j]);
+                }
+            }
+            return matrix;
+        }),
+        ...overrides,
+    };
+}
+
+function mockGroupMemoryService() {
+    return {
+        lookupGrouping: vi.fn(async () => null),
+        saveGrouping: vi.fn(async () => {}),
+        loadPairMatrix: vi.fn(async (addrs) => {
+            const n = addrs.length;
+            return Array.from({ length: n }, () => new Array(n).fill(null));
+        }),
+        savePairMatrix: vi.fn(async () => {}),
+        harvestLegsToDb: vi.fn(async () => {}),
+        normalizeAddress: (addr) => addr.trim().toLowerCase().replace(/\s+/g, ' '),
+        isDbConfigured: () => false,
+    };
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
 describe('Integration: T01 - Validation', () => {
+    beforeEach(() => {
+        vi.resetModules();
+        vi.doMock('../src/js/services/mapsService.js', () => mockMapsService());
+        vi.doMock('../src/js/services/groupMemoryService.js', () => mockGroupMemoryService());
+    });
+
     it('T01 - prevents calculation without set address', async () => {
         const { calculateRoutes } = await import('../src/js/services/routingAlgorithm.js');
 
@@ -13,13 +86,17 @@ describe('Integration: T01 - Validation', () => {
             { id: '1', name: 'Test', address: 'Some Street', isSpecial: false, arrivalTime: '' }
         ];
 
-        // The UI layer prevents this, but the algorithm itself should handle gracefully
-        // This test validates the UI validation logic exists
         expect(typeof calculateRoutes).toBe('function');
     });
 });
 
 describe('Integration: T02 - Max Occupancy', () => {
+    beforeEach(() => {
+        vi.resetModules();
+        vi.doMock('../src/js/services/mapsService.js', () => mockMapsService());
+        vi.doMock('../src/js/services/groupMemoryService.js', () => mockGroupMemoryService());
+    });
+
     it('T02 - splits 4 passengers into 2 taxis (max 3 per taxi)', async () => {
         const { calculateRoutes } = await import('../src/js/services/routingAlgorithm.js');
 
@@ -40,6 +117,12 @@ describe('Integration: T02 - Max Occupancy', () => {
 });
 
 describe('Integration: T04 - Special Taxi', () => {
+    beforeEach(() => {
+        vi.resetModules();
+        vi.doMock('../src/js/services/mapsService.js', () => mockMapsService());
+        vi.doMock('../src/js/services/groupMemoryService.js', () => mockGroupMemoryService());
+    });
+
     it('T04 - allocates dedicated taxi for special passengers', async () => {
         const { calculateRoutes } = await import('../src/js/services/routingAlgorithm.js');
 
@@ -59,10 +142,6 @@ describe('Integration: T04 - Special Taxi', () => {
 });
 
 describe('Integration: Noam Scenario - 2 nearby Tel Aviv pickups to Petah Tikva', () => {
-    // Realistic travel times for this route (pessimistic + buffered):
-    //   שילר 8 תל אביב → תוצרת הארץ 3 פתח תקוה  ≈ 35 min
-    //   קהילת אודסה 27 תל אביב → תוצרת הארץ 3 פתח תקוה  ≈ 32 min
-    //   שילר → קהילת אודסה detour leg ≈ 5 min
     const DEST = 'תוצרת הארץ 3 פתח תקוה';
     const ADDR_A = 'שילר 8 תל אביב';
     const ADDR_B = 'קהילת אודסה 27 תל אביב';
@@ -70,21 +149,16 @@ describe('Integration: Noam Scenario - 2 nearby Tel Aviv pickups to Petah Tikva'
     beforeEach(() => {
         vi.resetModules();
 
-        vi.doMock('../src/js/services/mapsService.js', () => ({
-            isApiConfigured: () => true,
-            getApiCallCount: () => 0,
-            getApiCostEstimate: () => 0,
+        vi.doMock('../src/js/services/mapsService.js', () => mockMapsService({
             getBatchTravelTimes: vi.fn(async (origins) => origins.map(origin => {
                 if (origin === ADDR_A) return { duration: 35, status: 'OK' };
                 if (origin === ADDR_B) return { duration: 32, status: 'OK' };
                 return { duration: 30, status: 'OK' };
             })),
             getRouteDuration: vi.fn(async (waypoints) => {
-                // 2-stop route: pickup A → pickup B → destination
                 if (waypoints.length === 3) {
                     return { totalDuration: 37, legDurations: [5, 32], status: 'OK' };
                 }
-                // single pickup → destination
                 if (waypoints[0] === ADDR_A) return { totalDuration: 35, legDurations: [35], status: 'OK' };
                 return { totalDuration: 32, legDurations: [32], status: 'OK' };
             }),
@@ -94,18 +168,7 @@ describe('Integration: Noam Scenario - 2 nearby Tel Aviv pickups to Petah Tikva'
             ]),
         }));
 
-        vi.doMock('../src/js/services/groupMemoryService.js', () => ({
-            lookupGrouping: vi.fn(async () => null),
-            saveGrouping: vi.fn(async () => {}),
-            loadPairMatrix: vi.fn(async (addrs) => {
-                const n = addrs.length;
-                return Array.from({ length: n }, () => new Array(n).fill(null));
-            }),
-            savePairMatrix: vi.fn(async () => {}),
-            harvestLegsToDb: vi.fn(async () => {}),
-            normalizeAddress: (addr) => addr.trim().toLowerCase().replace(/\s+/g, ' '),
-            isDbConfigured: () => false,
-        }));
+        vi.doMock('../src/js/services/groupMemoryService.js', () => mockGroupMemoryService());
     });
 
     it('groups both passengers into a single taxi', async () => {
@@ -141,6 +204,12 @@ describe('Integration: Noam Scenario - 2 nearby Tel Aviv pickups to Petah Tikva'
 });
 
 describe('Integration: T09 - Separate Passenger', () => {
+    beforeEach(() => {
+        vi.resetModules();
+        vi.doMock('../src/js/services/mapsService.js', () => mockMapsService());
+        vi.doMock('../src/js/services/groupMemoryService.js', () => mockGroupMemoryService());
+    });
+
     it('T09 - separates passenger and recalculates', async () => {
         const { separatePassenger } = await import('../src/js/services/routingAlgorithm.js');
 

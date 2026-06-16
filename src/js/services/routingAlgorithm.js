@@ -305,7 +305,9 @@ async function smartMatch(passengers, destination, arrivalDate, bucketTime, onPr
                 const delay = Math.max(0, Math.round((rideTime - p.directTime) * 10) / 10);
                 const pickupTime = subtractMinutesFromTime(bucketTime, rideTime);
                 console.log(`    ${p.name}: directTime=${p.directTime?.toFixed(1)} min, rideTime=${rideTime.toFixed(1)} min, delay=${delay} min, pickup=${pickupTime}`);
-                taxiGroup.push({ ...p, delay, pickupTime });
+                const pData = { ...p, delay, pickupTime };
+                if (routeResult.noTrafficData) pData.noTrafficData = true;
+                taxiGroup.push(pData);
                 if (k < routeResult.legDurations.length) {
                     cumulativeMinutes += routeResult.legDurations[k];
                 }

@@ -1,6 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { calculateRoutes, resolveMode, estimateMerge, estimateSeparate, refineTaxis } from '../src/js/services/routingAlgorithm.js';
-import { getApiCallCount, resetApiCallCount } from '../src/js/services/mapsService.js';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { getCacheStats, clearAllCaches, getCachedTravelTime, cacheTravelTime, getCachedRouteDuration, cacheRouteDuration } from '../src/js/services/cacheService.js';
 import { subtractMinutesFromTime } from '../src/js/utils/helpers.js';
 import { estimateGroupRoute } from '../src/js/services/optimizer.js';
@@ -12,20 +10,93 @@ import { estimateGroupRoute } from '../src/js/services/optimizer.js';
  * Phase 3 - Algorithm mode (auto/greedy/smart switching, NN ordering)
  * Phase 4 - Deferred API (estimateMerge, estimateSeparate, refineTaxis)
  *
- * All tests run in mock mode (no API key configured).
+ * Tests that call calculateRoutes / refineTaxis use vi.doMock for the maps
+ * and DB services.  Pure-logic tests (caching, resolveMode, estimateMerge,
+ * estimateSeparate) import directly since they never hit the network.
  */
+
+// ─── Shared mock helpers ────────────────────────────────────────────────────
+
+function seedDuration(origin, destination) {
+    const seed = (origin + destination).split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+    const pseudoRandom = ((seed * 9301 + 49297) % 233280) / 233280;
+    return Math.round((10 + pseudoRandom * 50) * 10) / 10;
+}
+
+function mockMapsService() {
+    return {
+        getApiCallCount: () => 0,
+        getCumulativeCost: () => 0,
+        resetApiCallCount: () => {},
+        onApiMilestone: () => {},
+        getBatchTravelTimes: vi.fn(async (origins, destination) =>
+            origins.map(origin => ({ duration: seedDuration(origin, destination), status: 'OK' }))
+        ),
+        getRouteDuration: vi.fn(async (waypoints) => {
+            const dest = waypoints[waypoints.length - 1];
+            const pickups = waypoints.slice(0, -1);
+            const directTimes = pickups.map(p => seedDuration(p, dest));
+            const maxDirect = Math.max(...directTimes);
+            const detour = 5 * (pickups.length - 1);
+            const totalDuration = Math.round((maxDirect + detour) * 10) / 10;
+            const legDurations = [];
+            if (pickups.length === 1) {
+                legDurations.push(totalDuration);
+            } else {
+                for (let i = 0; i < pickups.length - 1; i++) {
+                    legDurations.push(Math.round(detour / (pickups.length - 1) * 10) / 10);
+                }
+                const usedByLegs = legDurations.reduce((s, d) => s + d, 0);
+                legDurations.push(Math.round((totalDuration - usedByLegs) * 10) / 10);
+            }
+            return { totalDuration, legDurations, status: 'OK' };
+        }),
+        getAllPairTravelTimes: vi.fn(async (addresses) => {
+            const n = addresses.length;
+            const matrix = Array.from({ length: n }, () => new Array(n).fill(0));
+            for (let i = 0; i < n; i++) {
+                for (let j = 0; j < n; j++) {
+                    if (i !== j) matrix[i][j] = seedDuration(addresses[i], addresses[j]);
+                }
+            }
+            return matrix;
+        }),
+    };
+}
+
+function mockGroupMemoryService() {
+    return {
+        lookupGrouping: vi.fn(async () => null),
+        saveGrouping: vi.fn(async () => {}),
+        loadPairMatrix: vi.fn(async (addrs) => {
+            const n = addrs.length;
+            return Array.from({ length: n }, () => new Array(n).fill(null));
+        }),
+        savePairMatrix: vi.fn(async () => {}),
+        harvestLegsToDb: vi.fn(async () => {}),
+        normalizeAddress: (addr) => addr.trim().toLowerCase().replace(/\s+/g, ' '),
+        isDbConfigured: () => false,
+    };
+}
 
 // ──────────────────────────────────────────────────────────
 // Phase 1: Pre-API Gating
 // ──────────────────────────────────────────────────────────
 
 describe('Phase 1 - CLIENT-4: Early rejection on directTime difference', () => {
+    beforeEach(() => {
+        vi.resetModules();
+        vi.doMock('../src/js/services/mapsService.js', () => mockMapsService());
+        vi.doMock('../src/js/services/groupMemoryService.js', () => mockGroupMemoryService());
+    });
+
     const farApartPassengers = [
         { id: 'p1', name: 'Near', address: 'Near Place 1', isSpecial: false, arrivalTime: '' },
         { id: 'p2', name: 'Far', address: 'A very far away address in a different city entirely', isSpecial: false, arrivalTime: '' },
     ];
 
     it('T-SKIP-1: passengers with large directTime difference are not grouped together', async () => {
+        const { calculateRoutes } = await import('../src/js/services/routingAlgorithm.js');
         const result = await calculateRoutes(
             farApartPassengers,
             'Destination Address',
@@ -45,6 +116,7 @@ describe('Phase 1 - CLIENT-4: Early rejection on directTime difference', () => {
     });
 
     it('T-SKIP-2: passengers with close directTimes can still be grouped', async () => {
+        const { calculateRoutes } = await import('../src/js/services/routingAlgorithm.js');
         const closePassengers = [
             { id: 'p1', name: 'A', address: 'Street A 10', isSpecial: false, arrivalTime: '' },
             { id: 'p2', name: 'B', address: 'Street A 12', isSpecial: false, arrivalTime: '' },
@@ -59,7 +131,14 @@ describe('Phase 1 - CLIENT-4: Early rejection on directTime difference', () => {
 });
 
 describe('Phase 1 - ALGO-4: Solo taxi skip', () => {
+    beforeEach(() => {
+        vi.resetModules();
+        vi.doMock('../src/js/services/mapsService.js', () => mockMapsService());
+        vi.doMock('../src/js/services/groupMemoryService.js', () => mockGroupMemoryService());
+    });
+
     it('T-SOLO-1: single passenger gets correct pickupTime without extra Directions call', async () => {
+        const { calculateRoutes } = await import('../src/js/services/routingAlgorithm.js');
         const passengers = [
             { id: 'p1', name: 'Solo', address: 'Solo Street 1', isSpecial: false, arrivalTime: '' },
         ];
@@ -74,6 +153,7 @@ describe('Phase 1 - ALGO-4: Solo taxi skip', () => {
     });
 
     it('T-SOLO-2: solo pickupTime equals subtractMinutesFromTime(bucketTime, directTime)', async () => {
+        const { calculateRoutes } = await import('../src/js/services/routingAlgorithm.js');
         const passengers = [
             { id: 'p1', name: 'Solo', address: 'Solo Place', isSpecial: false, arrivalTime: '' },
         ];
@@ -87,15 +167,15 @@ describe('Phase 1 - ALGO-4: Solo taxi skip', () => {
 });
 
 describe('Phase 1 - FIN-4: API call telemetry', () => {
-    beforeEach(() => {
+    it('T-COUNTER-1: getApiCallCount starts at zero and tracks calls', async () => {
+        const { getApiCallCount, resetApiCallCount } = await import('../src/js/services/mapsService.js');
         resetApiCallCount();
-    });
-
-    it('T-COUNTER-1: getApiCallCount starts at zero and tracks calls', () => {
         expect(getApiCallCount()).toBe(0);
     });
 
     it('T-COUNTER-2: resetApiCallCount resets to zero', async () => {
+        const { getApiCallCount, resetApiCallCount } = await import('../src/js/services/mapsService.js');
+        resetApiCallCount();
         expect(getApiCallCount()).toBe(0);
         resetApiCallCount();
         expect(getApiCallCount()).toBe(0);
@@ -109,7 +189,6 @@ describe('Phase 1 - FIN-4: API call telemetry', () => {
 describe('Phase 2 - Cache behavior', () => {
     beforeEach(() => {
         clearAllCaches();
-        resetApiCallCount();
     });
 
     it('T-CACHE-4: clearAllCaches resets stats and memory', () => {
@@ -168,26 +247,36 @@ describe('Phase 2 - Cache behavior', () => {
 // ──────────────────────────────────────────────────────────
 
 describe('Phase 3 - resolveMode', () => {
-    it('T-AUTO-1: resolveMode returns correct mode for auto', () => {
+    it('T-AUTO-1: resolveMode returns correct mode for auto', async () => {
+        const { resolveMode } = await import('../src/js/services/routingAlgorithm.js');
         expect(resolveMode('auto', 3)).toBe('greedy');
         expect(resolveMode('auto', 5)).toBe('greedy');
         expect(resolveMode('auto', 6)).toBe('smart');
         expect(resolveMode('auto', 8)).toBe('smart');
     });
 
-    it('T-AUTO-5: explicit greedy is always greedy regardless of count', () => {
+    it('T-AUTO-5: explicit greedy is always greedy regardless of count', async () => {
+        const { resolveMode } = await import('../src/js/services/routingAlgorithm.js');
         expect(resolveMode('greedy', 10)).toBe('greedy');
         expect(resolveMode('greedy', 100)).toBe('greedy');
     });
 
-    it('T-AUTO-6: explicit smart is always smart regardless of count', () => {
+    it('T-AUTO-6: explicit smart is always smart regardless of count', async () => {
+        const { resolveMode } = await import('../src/js/services/routingAlgorithm.js');
         expect(resolveMode('smart', 1)).toBe('smart');
         expect(resolveMode('smart', 3)).toBe('smart');
     });
 });
 
 describe('Phase 3 - Auto mode end-to-end', () => {
+    beforeEach(() => {
+        vi.resetModules();
+        vi.doMock('../src/js/services/mapsService.js', () => mockMapsService());
+        vi.doMock('../src/js/services/groupMemoryService.js', () => mockGroupMemoryService());
+    });
+
     it('T-AUTO-2: small bucket uses greedy in auto mode', async () => {
+        const { calculateRoutes } = await import('../src/js/services/routingAlgorithm.js');
         const passengers = [
             { id: 'p1', name: 'A', address: 'Auto1', isSpecial: false, arrivalTime: '' },
             { id: 'p2', name: 'B', address: 'Auto2', isSpecial: false, arrivalTime: '' },
@@ -201,6 +290,7 @@ describe('Phase 3 - Auto mode end-to-end', () => {
     });
 
     it('T-AUTO-3: large bucket uses smart in auto mode', async () => {
+        const { calculateRoutes } = await import('../src/js/services/routingAlgorithm.js');
         const passengers = Array.from({ length: 8 }, (_, i) => ({
             id: `p${i}`, name: `P${i}`, address: `LargeAuto Street ${i}`, isSpecial: false, arrivalTime: '',
         }));
@@ -212,6 +302,7 @@ describe('Phase 3 - Auto mode end-to-end', () => {
     }, 30000);
 
     it('T-AUTO-4: mixed buckets use different modes per bucket', async () => {
+        const { calculateRoutes } = await import('../src/js/services/routingAlgorithm.js');
         const passengers = [
             { id: 'p1', name: 'Small1', address: 'SmallBucket 1', isSpecial: false, arrivalTime: '06:00' },
             { id: 'p2', name: 'Small2', address: 'SmallBucket 2', isSpecial: false, arrivalTime: '06:00' },
@@ -241,7 +332,6 @@ describe('Phase 3 - MATH-5: Nearest-neighbor ordering', () => {
         const directTimes = [30, 25, 40];
 
         const result = estimateGroupRoute([0, 1, 2], pairMatrix, directTimes);
-        // Best order should be [2,1,0]: T[2][1]+T[1][0]+D[0] = 8+6+30 = 44
         expect(result.bestOrder).toEqual([2, 1, 0]);
         expect(result.estimatedTime).toBe(44);
     });
@@ -255,16 +345,6 @@ describe('Phase 3 - MATH-5: Nearest-neighbor ordering', () => {
         const directTimes = [20, 30, 25];
 
         const result = estimateGroupRoute([0, 1, 2], pairMatrix, directTimes);
-
-        // Optimal by full permutation:
-        // [0,2,1]: 3+12+30 = 45
-        // [2,0,1]: 3+15+30 = 48
-        // [1,2,0]: 12+3+20 = 35
-        // [1,0,2]: 15+3+25 = 43
-        // [0,1,2]: 15+12+25 = 52
-        // [2,1,0]: 12+15+20 = 47
-        // Optimal = 35 ([1,2,0])
-        // NN from 1: picks 2 (dist 12), then 0 (dist 3) → [1,2,0] = 35 ✓
         expect(result.estimatedTime).toBeLessThanOrEqual(45);
     });
 
@@ -276,7 +356,6 @@ describe('Phase 3 - MATH-5: Nearest-neighbor ordering', () => {
         const directTimes = [30, 25];
 
         const result = estimateGroupRoute([0, 1], pairMatrix, directTimes);
-        // [0,1]: 8+25=33, [1,0]: 12+30=42 → best is [0,1]
         expect(result.bestOrder).toEqual([0, 1]);
         expect(result.estimatedTime).toBe(33);
     });
@@ -304,7 +383,8 @@ describe('Phase 4 - estimateMerge', () => {
         },
     ];
 
-    it('T-EST-1: estimateMerge flags all passengers as isEstimated', () => {
+    it('T-EST-1: estimateMerge flags all passengers as isEstimated', async () => {
+        const { estimateMerge } = await import('../src/js/services/routingAlgorithm.js');
         const result = estimateMerge(baseTaxis, 'taxi-1', 'taxi-2', '06:30');
 
         const mergedTaxi = result.taxis.find(t => t.passengers.length === 2);
@@ -312,12 +392,14 @@ describe('Phase 4 - estimateMerge', () => {
         expect(mergedTaxi.passengers.every(p => p.isEstimated === true)).toBe(true);
     });
 
-    it('estimateMerge produces correct number of taxis', () => {
+    it('estimateMerge produces correct number of taxis', async () => {
+        const { estimateMerge } = await import('../src/js/services/routingAlgorithm.js');
         const result = estimateMerge(baseTaxis, 'taxi-1', 'taxi-2', '06:30');
         expect(result.taxis).toHaveLength(1);
     });
 
-    it('estimateMerge returns unchanged taxis if IDs not found', () => {
+    it('estimateMerge returns unchanged taxis if IDs not found', async () => {
+        const { estimateMerge } = await import('../src/js/services/routingAlgorithm.js');
         const result = estimateMerge(baseTaxis, 'taxi-1', 'taxi-999', '06:30');
         expect(result.taxis).toHaveLength(2);
     });
@@ -336,7 +418,8 @@ describe('Phase 4 - estimateSeparate', () => {
         },
     ];
 
-    it('T-EST-2: separated passenger has delay:0 and isEstimated:false', () => {
+    it('T-EST-2: separated passenger has delay:0 and isEstimated:false', async () => {
+        const { estimateSeparate } = await import('../src/js/services/routingAlgorithm.js');
         const result = estimateSeparate(taxiWithGroup, 'taxi-1', 'p2', '06:30');
 
         const soloTaxi = result.taxis.find(t =>
@@ -347,7 +430,8 @@ describe('Phase 4 - estimateSeparate', () => {
         expect(soloTaxi.passengers[0].isEstimated).toBe(false);
     });
 
-    it('remaining group passengers are flagged isEstimated:true', () => {
+    it('remaining group passengers are flagged isEstimated:true', async () => {
+        const { estimateSeparate } = await import('../src/js/services/routingAlgorithm.js');
         const result = estimateSeparate(taxiWithGroup, 'taxi-1', 'p2', '06:30');
 
         const remainingTaxi = result.taxis.find(t => t.passengers.length === 2);
@@ -355,7 +439,8 @@ describe('Phase 4 - estimateSeparate', () => {
         expect(remainingTaxi.passengers.every(p => p.isEstimated === true)).toBe(true);
     });
 
-    it('total passenger count is preserved', () => {
+    it('total passenger count is preserved', async () => {
+        const { estimateSeparate } = await import('../src/js/services/routingAlgorithm.js');
         const result = estimateSeparate(taxiWithGroup, 'taxi-1', 'p2', '06:30');
         const total = result.taxis.reduce((s, t) => s + t.passengers.length, 0);
         expect(total).toBe(3);
@@ -363,7 +448,14 @@ describe('Phase 4 - estimateSeparate', () => {
 });
 
 describe('Phase 4 - refineTaxis', () => {
+    beforeEach(() => {
+        vi.resetModules();
+        vi.doMock('../src/js/services/mapsService.js', () => mockMapsService());
+        vi.doMock('../src/js/services/groupMemoryService.js', () => mockGroupMemoryService());
+    });
+
     it('T-EST-3: refineTaxis clears isEstimated flag', async () => {
+        const { refineTaxis } = await import('../src/js/services/routingAlgorithm.js');
         const estimatedTaxis = [
             {
                 id: 'taxi-1', number: 1,
@@ -384,6 +476,7 @@ describe('Phase 4 - refineTaxis', () => {
     });
 
     it('T-EST-4: refineTaxis skips taxis without estimates', async () => {
+        const { refineTaxis } = await import('../src/js/services/routingAlgorithm.js');
         const exactTaxis = [
             {
                 id: 'taxi-1', number: 1,
@@ -400,6 +493,7 @@ describe('Phase 4 - refineTaxis', () => {
     });
 
     it('refineTaxis handles mixed estimated and non-estimated taxis', async () => {
+        const { refineTaxis } = await import('../src/js/services/routingAlgorithm.js');
         const mixedTaxis = [
             {
                 id: 'taxi-1', number: 1,
@@ -426,7 +520,14 @@ describe('Phase 4 - refineTaxis', () => {
 });
 
 describe('Phase 4 - Full merge-then-refine flow', () => {
+    beforeEach(() => {
+        vi.resetModules();
+        vi.doMock('../src/js/services/mapsService.js', () => mockMapsService());
+        vi.doMock('../src/js/services/groupMemoryService.js', () => mockGroupMemoryService());
+    });
+
     it('merge then refine produces valid final state', async () => {
+        const { calculateRoutes, estimateMerge, refineTaxis } = await import('../src/js/services/routingAlgorithm.js');
         const passengers = [
             { id: 'p1', name: 'A', address: 'FlowAddr1', isSpecial: false, arrivalTime: '' },
             { id: 'p2', name: 'B', address: 'FlowAddr2', isSpecial: false, arrivalTime: '' },

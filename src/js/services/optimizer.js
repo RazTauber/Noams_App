@@ -95,7 +95,7 @@ function evaluateOrderTime(order, pairMatrix, directTimes) {
  * Compute per-passenger ride time (time from their pickup to destination)
  * for a given pickup order.
  */
-function computeRideTimes(order, pairMatrix, directTimes) {
+export function computeRideTimes(order, pairMatrix, directTimes) {
     const totalTime = evaluateOrderTime(order, pairMatrix, directTimes);
     if (totalTime === Infinity) return null;
 

@@ -102,8 +102,8 @@ function normalizeTime(raw) {
 /**
  * Format minutes into a readable delay string.
  */
-export function formatDelay(minutes) {
-    if (minutes <= 0) return 'Direct';
+export function formatDelay(minutes, { isSharedNonLast = false } = {}) {
+    if (minutes <= 0) return isSharedNonLast ? 'No delay' : 'Direct';
     return `+${Math.round(minutes)} min`;
 }
 
