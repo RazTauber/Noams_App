@@ -22,8 +22,9 @@ function normalizeToDayHour(unixSeconds) {
 }
 
 function buildCacheKey(type, params) {
-    const hour = params.arrival_time
-        ? normalizeToDayHour(parseInt(params.arrival_time, 10))
+    const timeParam = params.arrival_time || params.departure_time;
+    const hour = timeParam
+        ? normalizeToDayHour(parseInt(timeParam, 10))
         : 'no-time';
 
     if (type === 'distancematrix') {
@@ -103,9 +104,28 @@ export default async function handler(req, env) {
         }
     }
 
-    // Build query — server adds the key, client never sends it
+    // For driving mode, arrival_time doesn't enable traffic predictions —
+    // only departure_time does.  Convert the client-supplied arrival_time to
+    // an estimated departure_time and request the pessimistic traffic model
+    // so pickup times are safely conservative.
+    const patchedParams = { ...params };
+    const departureOffsetMinutes = patchedParams.departure_offset || 60;
+    delete patchedParams.departure_offset;
+
+    if (patchedParams.arrival_time && !patchedParams.departure_time) {
+        const arrivalSecs = parseInt(patchedParams.arrival_time, 10);
+        const offsetSecs = departureOffsetMinutes * 60;
+        patchedParams.departure_time = String(Math.max(
+            Math.floor(Date.now() / 1000) + 60, // at least 1 min in the future
+            arrivalSecs - offsetSecs
+        ));
+        delete patchedParams.arrival_time;
+        patchedParams.traffic_model = 'pessimistic';
+        patchedParams.mode = patchedParams.mode || 'driving';
+    }
+
     const query = new URLSearchParams({
-        ...params,
+        ...patchedParams,
         key: API_KEY,
         language: 'he',
         region: 'il',

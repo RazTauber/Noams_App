@@ -14,7 +14,8 @@ import {
     getCachedTravelTime, cacheTravelTime,
     getCachedRouteDuration, cacheRouteDuration,
 } from './cacheService.js';
-import { loadPairMatrix, savePairMatrix } from './groupMemoryService.js';
+import { loadPairMatrix, savePairMatrix, harvestLegsToDb } from './groupMemoryService.js';
+import { ALGORITHM_CONFIG } from '../utils/constants.js';
 
 let apiCallCounter = 0;
 let proxyAvailable = null; // null = unchecked, true/false after first attempt
@@ -236,6 +237,7 @@ export async function getTravelTime(origin, destination, arrivalTime) {
             origins: origin,
             destinations: destination,
             arrival_time: arrivalTimestamp.toString(),
+            departure_offset: ALGORITHM_CONFIG.DEPARTURE_OFFSET_MINUTES,
         });
 
         if (data.status !== 'OK') {
@@ -248,10 +250,14 @@ export async function getTravelTime(origin, destination, arrivalTime) {
             return { duration: null, status: 'ADDRESS_ERROR' };
         }
 
-        const duration = element.duration_in_traffic?.value
+        if (!element.duration_in_traffic) {
+            console.warn('[MAPS] ⚠️ No traffic data — using static duration (check departure_time / traffic_model config)');
+        }
+        const rawMinutes = element.duration_in_traffic?.value
             ? element.duration_in_traffic.value / 60
             : element.duration.value / 60;
-        console.log(`[MAPS]   → ${duration.toFixed(1)} min`);
+        const duration = rawMinutes * ALGORITHM_CONFIG.TRAVEL_TIME_BUFFER;
+        console.log(`[MAPS]   → raw=${rawMinutes.toFixed(1)} → buffered=${duration.toFixed(1)} min`);
         return { duration, status: 'OK' };
     } catch (error) {
         if (proxyAvailable === false) {
@@ -314,13 +320,15 @@ export async function getBatchTravelTimes(origins, destination, arrivalTime) {
             origins: uncachedOrigins.join('|'),
             destinations: destination,
             arrival_time: arrivalTimestamp.toString(),
+            departure_offset: ALGORITHM_CONFIG.DEPARTURE_OFFSET_MINUTES,
         });
 
         if (data.status === 'REQUEST_DENIED' || data.status === 'OVER_QUERY_LIMIT') {
             throw new Error(`Google API error: ${data.status} - ${data.error_message || 'API key issue'}`);
         }
 
-        console.group(`  Parsing ${data.rows.length} rows`);
+        const buf = ALGORITHM_CONFIG.TRAVEL_TIME_BUFFER;
+        console.group(`  Parsing ${data.rows.length} rows (×${buf} safety buffer)`);
         for (let r = 0; r < data.rows.length; r++) {
             const element = data.rows[r].elements[0];
             const originalIndex = uncachedIndices[r];
@@ -329,16 +337,20 @@ export async function getBatchTravelTimes(origins, destination, arrivalTime) {
                 result = { duration: null, status: element?.status || 'UNKNOWN_ERROR' };
                 console.warn(`    [${originalIndex}] ❌ ${origins[originalIndex]} — ${result.status}`);
             } else {
+                const rawMinutes = element.duration_in_traffic?.value
+                    ? element.duration_in_traffic.value / 60
+                    : element.duration.value / 60;
                 result = {
-                    duration: element.duration_in_traffic?.value
-                        ? element.duration_in_traffic.value / 60
-                        : element.duration.value / 60,
+                    duration: rawMinutes * buf,
                     status: 'OK',
                 };
                 const trafficNote = element.duration_in_traffic
                     ? ` (traffic: ${(element.duration_in_traffic.value/60).toFixed(1)} min)`
-                    : '';
-                console.log(`    [${originalIndex}] ✅ ${origins[originalIndex]} — ${result.duration.toFixed(1)} min${trafficNote}`);
+                    : ' (no traffic data)';
+                if (!element.duration_in_traffic) {
+                    console.warn('[MAPS] ⚠️ No traffic data — using static duration (check departure_time / traffic_model config)');
+                }
+                console.log(`    [${originalIndex}] ✅ ${origins[originalIndex]} — raw=${rawMinutes.toFixed(1)} → buffered=${result.duration.toFixed(1)} min${trafficNote}`);
             }
             results[originalIndex] = result;
             if (result.status === 'OK') {
@@ -406,6 +418,7 @@ export async function getRouteDuration(waypoints, arrivalTime) {
         origin,
         destination,
         arrival_time: Math.floor(arrivalTime.getTime() / 1000).toString(),
+        departure_offset: ALGORITHM_CONFIG.DEPARTURE_OFFSET_MINUTES,
     };
     if (intermediates.length > 0) {
         params.waypoints = intermediates.join('|');
@@ -421,18 +434,45 @@ export async function getRouteDuration(waypoints, arrivalTime) {
             return { totalDuration: null, legDurations: [], status: data.status };
         }
 
+        const buf = ALGORITHM_CONFIG.TRAVEL_TIME_BUFFER;
+        const legsWithoutTraffic = data.routes[0].legs.filter(leg => !leg.duration_in_traffic);
+        if (legsWithoutTraffic.length > 0) {
+            console.warn(`[MAPS] ⚠️ ${legsWithoutTraffic.length}/${data.routes[0].legs.length} leg(s) missing traffic data — using static duration (check departure_time / traffic_model config)`);
+        }
         const legDurations = data.routes[0].legs.map(
-            leg => (leg.duration_in_traffic?.value || leg.duration.value) / 60
+            leg => ((leg.duration_in_traffic?.value || leg.duration.value) / 60) * buf
         );
-        const totalSeconds = data.routes[0].legs.reduce(
+        const rawTotalSeconds = data.routes[0].legs.reduce(
             (sum, leg) => sum + (leg.duration_in_traffic?.value || leg.duration.value),
             0
         );
+        const totalDuration = (rawTotalSeconds / 60) * buf;
 
-        const result = { totalDuration: totalSeconds / 60, legDurations, status: 'OK' };
-        console.log(`  ✅ Total: ${result.totalDuration.toFixed(1)} min | Legs: [${legDurations.map(d => d.toFixed(1)).join(', ')}]`);
+        const result = { totalDuration, legDurations, status: 'OK' };
+        console.log(`  ✅ Total: raw=${(rawTotalSeconds/60).toFixed(1)} → buffered=${totalDuration.toFixed(1)} min (×${buf}) | Legs: [${legDurations.map(d => d.toFixed(1)).join(', ')}]`);
         console.groupEnd();
         cacheRouteDuration(waypoints, arrivalHour, result);
+
+        // Harvest pickup-to-pickup leg durations into the pair cache.
+        // Skip the last leg (last pickup → destination) since pair cache is
+        // exclusively for pickup-to-pickup distances used by the ILP solver.
+        if (waypoints.length > 2 && legDurations.length === waypoints.length - 1) {
+            const harvestPairs = [];
+            for (let k = 0; k < legDurations.length - 1; k++) {
+                harvestPairs.push({
+                    origin: waypoints[k],
+                    dest: waypoints[k + 1],
+                    minutes: legDurations[k],
+                });
+                cacheTravelTime(waypoints[k], waypoints[k + 1], arrivalHour, {
+                    duration: legDurations[k], status: 'OK',
+                });
+            }
+            if (harvestPairs.length > 0) {
+                harvestLegsToDb(harvestPairs);
+            }
+        }
+
         return result;
     } catch (error) {
         if (proxyAvailable === false) {
@@ -495,49 +535,61 @@ export async function getAllPairTravelTimes(addresses, arrivalTime) {
     const dbMisses = matrix.flat().filter(v => v === null).length;
     console.log(`  DB cache: ${dbHits} hits, ${dbMisses} misses`);
 
-    const chunksToFetch = [];
-    for (let oStart = 0; oStart < n; oStart += CHUNK_SIZE) {
-        for (let dStart = 0; dStart < n; dStart += CHUNK_SIZE) {
-            const oEnd = Math.min(oStart + CHUNK_SIZE, n);
-            const dEnd = Math.min(dStart + CHUNK_SIZE, n);
-            let needsFetch = false;
-            outer: for (let i = oStart; i < oEnd; i++) {
-                for (let j = dStart; j < dEnd; j++) {
-                    if (i !== j && matrix[i][j] === null) {
-                        needsFetch = true;
-                        break outer;
-                    }
-                }
+    // Collect only the address indices that participate in missing pairs
+    const missingOriginSet = new Set();
+    const missingDestSet = new Set();
+    for (let i = 0; i < n; i++) {
+        for (let j = 0; j < n; j++) {
+            if (i !== j && matrix[i][j] === null) {
+                missingOriginSet.add(i);
+                missingDestSet.add(j);
             }
-            if (needsFetch) chunksToFetch.push({ oStart, dStart });
         }
     }
 
-    if (chunksToFetch.length === 0) {
+    if (missingOriginSet.size === 0) {
         console.log(`  ✅ All pairs in DB — 0 API calls needed`);
         console.groupEnd();
         return matrix;
     }
 
-    console.log(`  Tier 2: fetching ${chunksToFetch.length} chunk(s) from API:`, chunksToFetch);
+    const missingOrigins = [...missingOriginSet];
+    const missingDests = [...missingDestSet];
+    const totalMissingElements = missingOrigins.length * missingDests.length;
+    const naiveElements = n * n;
+
+    console.log(`  Minimal-chunk strategy: ${missingOrigins.length} origins × ${missingDests.length} dests = ${totalMissingElements} elements (vs ${naiveElements} naive)`);
+
+    // Build minimal chunks from only the addresses that have missing data
+    const chunksToFetch = [];
+    for (let oStart = 0; oStart < missingOrigins.length; oStart += CHUNK_SIZE) {
+        for (let dStart = 0; dStart < missingDests.length; dStart += CHUNK_SIZE) {
+            const oSlice = missingOrigins.slice(oStart, oStart + CHUNK_SIZE);
+            const dSlice = missingDests.slice(dStart, dStart + CHUNK_SIZE);
+            chunksToFetch.push({ originIndices: oSlice, destIndices: dSlice });
+        }
+    }
+
+    console.log(`  Tier 2: fetching ${chunksToFetch.length} minimal chunk(s) from API`);
 
     const results = await Promise.allSettled(
-        chunksToFetch.map(({ oStart, dStart }) => {
-            const originSlice = addresses.slice(oStart, Math.min(oStart + CHUNK_SIZE, n));
-            const destSlice   = addresses.slice(dStart, Math.min(dStart + CHUNK_SIZE, n));
+        chunksToFetch.map(({ originIndices, destIndices }) => {
+            const originAddrs = originIndices.map(i => addresses[i]);
+            const destAddrs = destIndices.map(j => addresses[j]);
 
-            console.log(`    Chunk [${oStart}..${oStart+originSlice.length-1}] × [${dStart}..${dStart+destSlice.length-1}] — ${originSlice.length}×${destSlice.length} elements`);
+            console.log(`    Chunk ${originAddrs.length}×${destAddrs.length} elements`);
 
             apiCallCounter++;
             return callProxy('distancematrix', {
-                origins:      originSlice.join('|'),
-                destinations: destSlice.join('|'),
+                origins:      originAddrs.join('|'),
+                destinations: destAddrs.join('|'),
                 arrival_time: arrivalTimestamp.toString(),
+                departure_offset: ALGORITHM_CONFIG.DEPARTURE_OFFSET_MINUTES,
             }).then(data => {
                 if (data.status === 'REQUEST_DENIED' || data.status === 'OVER_QUERY_LIMIT') {
                     throw new Error(`Google API error: ${data.status} - ${data.error_message || ''}`);
                 }
-                return { oStart, dStart, data };
+                return { originIndices, destIndices, data };
             });
         })
     );
@@ -552,6 +604,7 @@ export async function getAllPairTravelTimes(addresses, arrivalTime) {
     let filledPairs = 0;
     let failedPairs = 0;
 
+    const buf = ALGORITHM_CONFIG.TRAVEL_TIME_BUFFER;
     for (const result of results) {
         if (result.status === 'rejected') {
             console.warn(`  ❌ Chunk rejected:`, result.reason?.message);
@@ -561,14 +614,17 @@ export async function getAllPairTravelTimes(addresses, arrivalTime) {
             }
             continue;
         }
-        const { oStart, dStart, data } = result.value;
+        const { originIndices, destIndices, data } = result.value;
         for (let i = 0; i < data.rows.length; i++) {
             for (let j = 0; j < data.rows[i].elements.length; j++) {
                 const el = data.rows[i].elements[j];
+                const matrixRow = originIndices[i];
+                const matrixCol = destIndices[j];
                 if (el.status === 'OK') {
-                    matrix[oStart + i][dStart + j] = el.duration_in_traffic?.value
+                    const rawMinutes = el.duration_in_traffic?.value
                         ? el.duration_in_traffic.value / 60
                         : el.duration.value / 60;
+                    matrix[matrixRow][matrixCol] = rawMinutes * buf;
                     filledPairs++;
                 } else {
                     failedPairs++;

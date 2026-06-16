@@ -17,6 +17,10 @@ export function renderPassengerTable(passengers, onRemove, onUpdate) {
                        data-index="${index}" data-field="name">
             </td>
             <td>
+                <input type="tel" value="${escapeHtml(passenger.phone)}" 
+                       data-index="${index}" data-field="phone">
+            </td>
+            <td>
                 <input type="text" value="${escapeHtml(passenger.address)}" 
                        data-index="${index}" data-field="address">
             </td>
@@ -26,10 +30,10 @@ export function renderPassengerTable(passengers, onRemove, onUpdate) {
             </td>
             <td>
                 <div class="exception-time-cell">
-                    <input type="time" value="${passenger.exceptionTime}" 
-                           data-index="${index}" data-field="exceptionTime">
-                    <button class="btn-clear-time ${passenger.exceptionTime ? '' : 'hidden'}" 
-                            data-action="clearTime" data-index="${index}" title="Clear exception time">✕</button>
+                    <input type="time" value="${passenger.arrivalTime}" 
+                           data-index="${index}" data-field="arrivalTime">
+                    <button class="btn-clear-time ${passenger.arrivalTime ? '' : 'hidden'}" 
+                            data-action="clearTime" data-index="${index}" title="Clear arrival time">✕</button>
                 </div>
             </td>
             <td style="text-align: center;">
@@ -46,7 +50,7 @@ export function renderPassengerTable(passengers, onRemove, onUpdate) {
                 const value = field === 'isSpecial' ? input.checked : input.value;
                 onUpdate(index, field, value);
 
-                if (field === 'exceptionTime') {
+                if (field === 'arrivalTime') {
                     const clearBtn = tr.querySelector('[data-action="clearTime"]');
                     clearBtn.classList.toggle('hidden', !value);
                 }
@@ -55,9 +59,9 @@ export function renderPassengerTable(passengers, onRemove, onUpdate) {
 
         const clearTimeBtn = tr.querySelector('[data-action="clearTime"]');
         clearTimeBtn.addEventListener('click', () => {
-            const timeInput = tr.querySelector('[data-field="exceptionTime"]');
+            const timeInput = tr.querySelector('[data-field="arrivalTime"]');
             timeInput.value = '';
-            onUpdate(index, 'exceptionTime', '');
+            onUpdate(index, 'arrivalTime', '');
             clearTimeBtn.classList.add('hidden');
         });
 
@@ -96,7 +100,7 @@ export function renderTaxiCards(taxis, onSeparate, onMerge, onRefine) {
         const isMergeTarget = mergeSelectedTaxiId && mergeSelectedTaxiId !== taxi.id && canMerge;
 
         const passengersHtml = taxi.passengers.map(p => {
-            const delayClass = p.delay === null ? '' : p.delay <= 10 ? 'delay-ok' : 'delay-warning';
+            const delayClass = p.delay === null ? '' : p.delay <= 5 ? 'delay-ok' : p.delay <= 12 ? 'delay-warning' : 'delay-danger';
             const delayText = p.delay === null ? '—' : formatDelay(p.delay);
             const pickupTimeText = p.isEstimated ? `~${p.pickupTime || '—'}` : (p.pickupTime || '—');
             const showSeparate = taxi.passengers.length > 1 && !taxi.isSpecial;
@@ -104,7 +108,7 @@ export function renderTaxiCards(taxis, onSeparate, onMerge, onRefine) {
             return `
                 <div class="taxi-passenger${p.isEstimated ? ' taxi-passenger-estimated' : ''}">
                     <div class="taxi-passenger-info">
-                        <div class="taxi-passenger-name">${escapeHtml(p.name)}</div>
+                        <div class="taxi-passenger-name">${escapeHtml(p.name)}${p.phone ? ` <span class="taxi-passenger-phone">${escapeHtml(p.phone)}</span>` : ''}</div>
                         <div class="taxi-passenger-address">${escapeHtml(p.address)}</div>
                     </div>
                     <span class="taxi-passenger-pickup">${pickupTimeText}</span>

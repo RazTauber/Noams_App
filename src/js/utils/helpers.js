@@ -41,18 +41,20 @@ export function parsePassengers(rawRows) {
 
     const headers = [...new Set(rawRows.flatMap(r => Object.keys(r)))];
     const nameCol = resolveColumn(headers, COLUMN_MAPPINGS.name);
+    const phoneCol = resolveColumn(headers, COLUMN_MAPPINGS.phone);
     const addressCol = resolveColumn(headers, COLUMN_MAPPINGS.address);
     const specialCol = resolveColumn(headers, COLUMN_MAPPINGS.isSpecial);
-    const timeCol = resolveColumn(headers, COLUMN_MAPPINGS.exceptionTime);
+    const timeCol = resolveColumn(headers, COLUMN_MAPPINGS.arrivalTime);
 
     const results = rawRows.map((row, index) => ({
         id: `p-${index}-${Date.now()}`,
         name: (nameCol ? row[nameCol] : '')?.toString().trim() || '',
+        phone: (phoneCol ? row[phoneCol] : '')?.toString().trim() || '',
         address: (addressCol ? row[addressCol] : '')?.toString().trim() || '',
         isSpecial: specialCol
             ? POSITIVE_VALUES.includes(row[specialCol]?.toString().trim().toLowerCase())
             : false,
-        exceptionTime: normalizeTime(timeCol ? row[timeCol] : ''),
+        arrivalTime: normalizeTime(timeCol ? row[timeCol] : ''),
         status: 'pending',
     }));
 
@@ -67,7 +69,7 @@ export function groupByTimeBucket(passengers, mainTime) {
     const buckets = new Map();
 
     for (const p of passengers) {
-        const key = p.exceptionTime || mainTime;
+        const key = p.arrivalTime || mainTime;
         if (!buckets.has(key)) buckets.set(key, []);
         buckets.get(key).push(p);
     }

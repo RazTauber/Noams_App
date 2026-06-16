@@ -20,6 +20,7 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
+import { PAIR_CACHE_VERSION } from '../utils/constants.js';
 
 const SUPABASE_URL     = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -182,6 +183,36 @@ export async function saveGrouping(destination, arrivalHour, addresses, grouping
     console.groupEnd();
 }
 
+// ─── Cache version gate ──────────────────────────────────────────────────────
+
+const CACHE_VERSION_KEY = 'taxi_pair_cache_version';
+let _versionChecked = false;
+
+async function ensureCacheVersion() {
+    if (_versionChecked) return;
+    _versionChecked = true;
+
+    const stored = localStorage.getItem(CACHE_VERSION_KEY);
+    if (stored === String(PAIR_CACHE_VERSION)) return;
+
+    const db = getClient();
+    if (!db) return;
+
+    console.warn(
+        `[DB] ♻️ Pair cache version mismatch (stored=${stored}, current=${PAIR_CACHE_VERSION}) — flushing stale data`
+    );
+
+    try {
+        await db.from('address_pair_cache').delete().neq('origin_norm', '');
+        await db.from('grouping_memory').delete().neq('dest_norm', '');
+        console.log('[DB] ✅ Stale pair cache and grouping memory cleared');
+    } catch (err) {
+        console.warn('[DB] ❌ Failed to flush stale cache:', err?.message);
+    }
+
+    localStorage.setItem(CACHE_VERSION_KEY, String(PAIR_CACHE_VERSION));
+}
+
 // ─── address_pair_cache ───────────────────────────────────────────────────────
 
 /**
@@ -201,6 +232,8 @@ export async function loadPairMatrix(addresses) {
         console.log(`[DB] loadPairMatrix — ${!db ? 'DB not configured' : 'empty addresses'}, returning null matrix`);
         return matrix;
     }
+
+    await ensureCacheVersion();
 
     const normalized = addresses.map(normalizeAddress);
 
@@ -256,6 +289,30 @@ export async function loadPairMatrix(addresses) {
 
     console.groupEnd();
     return matrix;
+}
+
+/**
+ * Persist individual pickup-to-pickup leg durations harvested from Directions
+ * API responses. Fire-and-forget — failures are silent.
+ *
+ * @param {{origin: string, dest: string, minutes: number}[]} pairs
+ */
+export async function harvestLegsToDb(pairs) {
+    const db = getClient();
+    if (!db || pairs.length === 0) return;
+
+    const rows = pairs.map(p => ({
+        origin_norm:    normalizeAddress(p.origin),
+        dest_norm:      normalizeAddress(p.dest),
+        travel_minutes: p.minutes,
+    }));
+
+    try {
+        await db.rpc('upsert_pair_times', { p_rows: rows });
+        console.log(`[DB] 🌱 Harvested ${rows.length} leg pairs from Directions response`);
+    } catch {
+        // Silent — harvesting is best-effort
+    }
 }
 
 /**

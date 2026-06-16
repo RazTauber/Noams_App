@@ -194,12 +194,12 @@ describe('Smart Algorithm - end-to-end with mock API', () => {
 
     it('smart mode produces fewer or equal taxis compared to greedy', async () => {
         const passengers = [
-            { id: 'p1', name: 'Avi', address: 'Tel Aviv, Dizengoff 100', isSpecial: false, exceptionTime: '' },
-            { id: 'p2', name: 'Bat', address: 'Tel Aviv, Rothschild 50', isSpecial: false, exceptionTime: '' },
-            { id: 'p3', name: 'Chen', address: 'Tel Aviv, Allenby 30', isSpecial: false, exceptionTime: '' },
-            { id: 'p4', name: 'Dan', address: 'Ramat Gan, Bialik 15', isSpecial: false, exceptionTime: '' },
-            { id: 'p5', name: 'Ela', address: 'Herzliya, Ben Gurion 8', isSpecial: false, exceptionTime: '' },
-            { id: 'p6', name: 'Fadi', address: 'Tel Aviv, King George 22', isSpecial: false, exceptionTime: '' },
+            { id: 'p1', name: 'Avi', address: 'Tel Aviv, Dizengoff 100', isSpecial: false, arrivalTime: '' },
+            { id: 'p2', name: 'Bat', address: 'Tel Aviv, Rothschild 50', isSpecial: false, arrivalTime: '' },
+            { id: 'p3', name: 'Chen', address: 'Tel Aviv, Allenby 30', isSpecial: false, arrivalTime: '' },
+            { id: 'p4', name: 'Dan', address: 'Ramat Gan, Bialik 15', isSpecial: false, arrivalTime: '' },
+            { id: 'p5', name: 'Ela', address: 'Herzliya, Ben Gurion 8', isSpecial: false, arrivalTime: '' },
+            { id: 'p6', name: 'Fadi', address: 'Tel Aviv, King George 22', isSpecial: false, arrivalTime: '' },
         ];
         const destination = 'Rishon LeZion, HaRakevet 5';
         const mainTime = '06:30';
@@ -217,9 +217,9 @@ describe('Smart Algorithm - end-to-end with mock API', () => {
 
     it('smart mode assigns all passengers with valid pickup times', async () => {
         const passengers = [
-            { id: 'p1', name: 'A', address: 'Addr1', isSpecial: false, exceptionTime: '' },
-            { id: 'p2', name: 'B', address: 'Addr2', isSpecial: false, exceptionTime: '' },
-            { id: 'p3', name: 'C', address: 'Addr3', isSpecial: false, exceptionTime: '' },
+            { id: 'p1', name: 'A', address: 'Addr1', isSpecial: false, arrivalTime: '' },
+            { id: 'p2', name: 'B', address: 'Addr2', isSpecial: false, arrivalTime: '' },
+            { id: 'p3', name: 'C', address: 'Addr3', isSpecial: false, arrivalTime: '' },
         ];
         const destination = 'SetAddr';
         const mainTime = '07:00';
@@ -237,8 +237,8 @@ describe('Smart Algorithm - end-to-end with mock API', () => {
 
     it('handles special passengers identically in both modes', async () => {
         const passengers = [
-            { id: 'p1', name: 'Special', address: 'SpecialAddr', isSpecial: true, exceptionTime: '' },
-            { id: 'p2', name: 'Regular', address: 'RegularAddr', isSpecial: false, exceptionTime: '' },
+            { id: 'p1', name: 'Special', address: 'SpecialAddr', isSpecial: true, arrivalTime: '' },
+            { id: 'p2', name: 'Regular', address: 'RegularAddr', isSpecial: false, arrivalTime: '' },
         ];
         const destination = 'Dest';
         const mainTime = '08:00';

@@ -1,7 +1,7 @@
 import { ALGORITHM_CONFIG } from '../utils/constants.js';
 import { groupByTimeBucket, subtractMinutesFromTime, extractCity } from '../utils/helpers.js';
 import { getBatchTravelTimes, getRouteDuration, getAllPairTravelTimes } from './mapsService.js';
-import { enumerateValidGroups, solveOptimalGrouping } from './optimizer.js';
+import { enumerateValidGroups, solveOptimalGrouping, estimateGroupRoute } from './optimizer.js';
 import { evaluateDelay } from './delayEvaluator.js';
 import { lookupGrouping, saveGrouping, normalizeAddress } from './groupMemoryService.js';
 
@@ -260,40 +260,51 @@ async function smartMatch(passengers, destination, arrivalDate, bucketTime, onPr
     const taxis = [];
     let directionsCalls = 0;
 
+    const multiGroups = [];
+    const soloGroups = [];
     for (const group of selectedGroups) {
         const groupPassengers = group.bestOrder.map(idx => passengers[idx]);
-
         if (groupPassengers.length === 1) {
-            const solo = groupPassengers[0];
-            const pickupTime = subtractMinutesFromTime(bucketTime, solo.directTime);
-            console.log(`  Solo: ${solo.name} — pickup=${pickupTime}, delay=0`);
-            taxis.push({
-                passengers: [{
-                    ...solo,
-                    delay: 0,
-                    pickupTime,
-                }],
-                isSpecial: false,
-                hasError: false,
-            });
-            continue;
+            soloGroups.push({ group, groupPassengers });
+        } else {
+            multiGroups.push({ group, groupPassengers });
         }
+    }
 
-        const waypoints = [...groupPassengers.map(p => p.address), destination];
+    for (const { groupPassengers } of soloGroups) {
+        const solo = groupPassengers[0];
+        const pickupTime = subtractMinutesFromTime(bucketTime, solo.directTime);
+        console.log(`  Solo: ${solo.name} — pickup=${pickupTime}, delay=0`);
+        taxis.push({
+            passengers: [{ ...solo, delay: 0, pickupTime }],
+            isSpecial: false,
+            hasError: false,
+        });
+    }
+
+    const routeResults = await Promise.all(
+        multiGroups.map(({ groupPassengers }) => {
+            const waypoints = [...groupPassengers.map(p => p.address), destination];
+            return getRouteDuration(waypoints, arrivalDate);
+        })
+    );
+    directionsCalls += multiGroups.length;
+
+    for (let g = 0; g < multiGroups.length; g++) {
+        const { group, groupPassengers } = multiGroups[g];
+        const routeResult = routeResults[g];
+
         console.group(`  Group [${groupPassengers.map(p => p.name).join(', ')}]`);
-        console.log(`    Waypoints: ${waypoints.join(' → ')}`);
-        const routeResult = await getRouteDuration(waypoints, arrivalDate);
-        directionsCalls++;
-
         const taxiGroup = [];
         if (routeResult.status === 'OK' && routeResult.totalDuration !== null) {
             console.log(`    Route OK: ${routeResult.totalDuration.toFixed(1)} min total, legs: [${routeResult.legDurations.map(d => d.toFixed(1)).join(', ')}]`);
             let cumulativeMinutes = 0;
             for (let k = 0; k < groupPassengers.length; k++) {
                 const p = groupPassengers[k];
-                const delay = Math.max(0, Math.round((routeResult.totalDuration - p.directTime) * 10) / 10);
-                const pickupTime = subtractMinutesFromTime(bucketTime, routeResult.totalDuration - cumulativeMinutes);
-                console.log(`    ${p.name}: directTime=${p.directTime?.toFixed(1)} min, delay=${delay} min, pickup=${pickupTime}`);
+                const rideTime = routeResult.totalDuration - cumulativeMinutes;
+                const delay = Math.max(0, Math.round((rideTime - p.directTime) * 10) / 10);
+                const pickupTime = subtractMinutesFromTime(bucketTime, rideTime);
+                console.log(`    ${p.name}: directTime=${p.directTime?.toFixed(1)} min, rideTime=${rideTime.toFixed(1)} min, delay=${delay} min, pickup=${pickupTime}`);
                 taxiGroup.push({ ...p, delay, pickupTime });
                 if (k < routeResult.legDurations.length) {
                     cumulativeMinutes += routeResult.legDurations[k];
@@ -347,6 +358,9 @@ async function buildTaxisFromSavedGrouping(savedGrouping, passengers, destinatio
     let directionsCalls = 0;
     const assignedIds = new Set();
 
+    const soloTaxis = [];
+    const multiGroupData = [];
+
     for (const groupAddresses of savedGrouping) {
         const groupPassengers = groupAddresses
             .map(addr => normMap.get(normalizeAddress(addr)))
@@ -357,7 +371,7 @@ async function buildTaxisFromSavedGrouping(savedGrouping, passengers, destinatio
 
         if (groupPassengers.length === 1) {
             const solo = groupPassengers[0];
-            taxis.push({
+            soloTaxis.push({
                 passengers: [{
                     ...solo,
                     delay: 0,
@@ -366,21 +380,37 @@ async function buildTaxisFromSavedGrouping(savedGrouping, passengers, destinatio
                 isSpecial: false,
                 hasError: false,
             });
-            continue;
+        } else {
+            multiGroupData.push(groupPassengers);
         }
+    }
 
-        // Always fetch a fresh route — respects today's traffic
-        const waypoints = [...groupPassengers.map(p => p.address), destination];
-        const routeResult = await getRouteDuration(waypoints, arrivalDate);
-        directionsCalls++;
+    // If not all passengers were covered the saved grouping is stale — re-solve
+    if (assignedIds.size !== passengers.length) return null;
+
+    // Fetch fresh routes in parallel for all multi-passenger groups
+    const routeResults = await Promise.all(
+        multiGroupData.map(groupPassengers => {
+            const waypoints = [...groupPassengers.map(p => p.address), destination];
+            return getRouteDuration(waypoints, arrivalDate);
+        })
+    );
+    directionsCalls += multiGroupData.length;
+
+    taxis.push(...soloTaxis);
+
+    for (let g = 0; g < multiGroupData.length; g++) {
+        const groupPassengers = multiGroupData[g];
+        const routeResult = routeResults[g];
 
         const taxiGroup = [];
         if (routeResult.status === 'OK' && routeResult.totalDuration !== null) {
             let cumulativeMinutes = 0;
             for (let k = 0; k < groupPassengers.length; k++) {
                 const p = groupPassengers[k];
-                const delay = Math.max(0, Math.round((routeResult.totalDuration - p.directTime) * 10) / 10);
-                const pickupTime = subtractMinutesFromTime(bucketTime, routeResult.totalDuration - cumulativeMinutes);
+                const rideTime = routeResult.totalDuration - cumulativeMinutes;
+                const delay = Math.max(0, Math.round((rideTime - p.directTime) * 10) / 10);
+                const pickupTime = subtractMinutesFromTime(bucketTime, rideTime);
                 taxiGroup.push({ ...p, delay, pickupTime });
                 if (k < routeResult.legDurations.length) {
                     cumulativeMinutes += routeResult.legDurations[k];
@@ -398,9 +428,6 @@ async function buildTaxisFromSavedGrouping(savedGrouping, passengers, destinatio
 
         taxis.push({ passengers: taxiGroup, isSpecial: false, hasError: false });
     }
-
-    // If not all passengers were covered the saved grouping is stale — re-solve
-    if (assignedIds.size !== passengers.length) return null;
 
     return { taxis, directionsCalls };
 }
@@ -466,6 +493,31 @@ async function greedyMatch(passengers, destination, arrivalDate, bucketTime, onP
                 continue;
             }
 
+            // Pre-filter: the route duration is always >= max(directTimes in the
+            // group). If even this best-case total (zero detour) would violate delay
+            // rules for any member, skip the expensive Directions API call.
+            const bestCaseTotal = Math.max(
+                ...taxiGroup.map(p => p.directTime),
+                candidate.directTime
+            );
+            let preFilterFailed = false;
+            for (const existing of taxiGroup) {
+                const bestDelay = bestCaseTotal - existing.directTime;
+                if (bestDelay > 0 && !evaluateDelay(existing.directTime, bestDelay).approved) {
+                    preFilterFailed = true;
+                    console.log(`    [${j}] ${candidate.name}: ❌ pre-filter — best-case delay ${bestDelay.toFixed(1)} min already fails for ${existing.name} (direct=${existing.directTime.toFixed(1)} min)`);
+                    break;
+                }
+            }
+            if (!preFilterFailed) {
+                const candidateBestDelay = bestCaseTotal - candidate.directTime;
+                if (candidateBestDelay > 0 && !evaluateDelay(candidate.directTime, candidateBestDelay).approved) {
+                    preFilterFailed = true;
+                    console.log(`    [${j}] ${candidate.name}: ❌ pre-filter — best-case delay ${candidateBestDelay.toFixed(1)} min fails for candidate itself (direct=${candidate.directTime.toFixed(1)} min)`);
+                }
+            }
+            if (preFilterFailed) continue;
+
             const waypoints = [
                 ...taxiGroup.map(p => p.address),
                 candidate.address,
@@ -496,22 +548,29 @@ async function greedyMatch(passengers, destination, arrivalDate, bucketTime, onP
 
             let allApproved = true;
             const delayEvals = [];
-            for (const existing of taxiGroup) {
-                const personalDelay = routeResult.totalDuration - existing.directTime;
+            let evalCumulative = 0;
+            for (let ei = 0; ei < taxiGroup.length; ei++) {
+                const existing = taxiGroup[ei];
+                const rideTime = routeResult.totalDuration - evalCumulative;
+                const personalDelay = rideTime - existing.directTime;
                 const evaluation = evaluateDelay(existing.directTime, Math.max(0, personalDelay));
-                delayEvals.push({ name: existing.name, delay: personalDelay.toFixed(1), approved: evaluation.approved, reason: evaluation.reason });
+                delayEvals.push({ name: existing.name, rideTime: rideTime.toFixed(1), delay: personalDelay.toFixed(1), approved: evaluation.approved, reason: evaluation.reason });
                 if (!evaluation.approved) {
                     allApproved = false;
                     break;
                 }
+                if (ei < routeResult.legDurations.length) {
+                    evalCumulative += routeResult.legDurations[ei];
+                }
             }
 
-            const candidateDelay = routeResult.totalDuration - candidate.directTime;
+            const candidateRideTime = routeResult.totalDuration - evalCumulative;
+            const candidateDelay = candidateRideTime - candidate.directTime;
             const candidateEval = evaluateDelay(candidate.directTime, Math.max(0, candidateDelay));
 
             console.log(`    [${j}] ${candidate.name}: route=${routeResult.totalDuration.toFixed(1)} min, addlDelay=${additionalDelay.toFixed(1)} min`);
             console.log(`      Existing pax delay check:`, delayEvals);
-            console.log(`      Candidate delay: ${candidateDelay.toFixed(1)} min, approved=${candidateEval.approved} (reason=${candidateEval.reason})`);
+            console.log(`      Candidate: rideTime=${candidateRideTime.toFixed(1)} min, delay=${candidateDelay.toFixed(1)} min, approved=${candidateEval.approved} (reason=${candidateEval.reason})`);
 
             if (allApproved && candidateEval.approved) {
                 assigned.add(j);
@@ -520,11 +579,16 @@ async function greedyMatch(passengers, destination, arrivalDate, bucketTime, onP
                     delay: Math.max(0, Math.round(candidateDelay * 10) / 10),
                 });
 
-                for (let k = 0; k < taxiGroup.length - 1; k++) {
+                let updCumulative = 0;
+                for (let k = 0; k < taxiGroup.length; k++) {
+                    const rideTime = routeResult.totalDuration - updCumulative;
                     taxiGroup[k].delay = Math.max(
                         0,
-                        Math.round((routeResult.totalDuration - taxiGroup[k].directTime) * 10) / 10
+                        Math.round((rideTime - taxiGroup[k].directTime) * 10) / 10
                     );
+                    if (k < routeResult.legDurations.length) {
+                        updCumulative += routeResult.legDurations[k];
+                    }
                 }
                 console.log(`    ✅ ${candidate.name} added to group`);
             } else {
@@ -545,10 +609,13 @@ async function greedyMatch(passengers, destination, arrivalDate, bucketTime, onP
                 console.log(`  Final route: ${finalRoute.totalDuration.toFixed(1)} min, legs=[${finalRoute.legDurations.map(d => d.toFixed(1)).join(', ')}]`);
                 let cumulativeMinutes = 0;
                 for (let k = 0; k < taxiGroup.length; k++) {
-                    const minutesFromStart = cumulativeMinutes;
-                    const totalRouteMinutes = finalRoute.totalDuration;
-                    taxiGroup[k].pickupTime = subtractMinutesFromTime(bucketTime, totalRouteMinutes - minutesFromStart);
-                    console.log(`    ${taxiGroup[k].name}: pickup=${taxiGroup[k].pickupTime}, delay=${taxiGroup[k].delay} min`);
+                    const rideTime = finalRoute.totalDuration - cumulativeMinutes;
+                    taxiGroup[k].delay = Math.max(
+                        0,
+                        Math.round((rideTime - taxiGroup[k].directTime) * 10) / 10
+                    );
+                    taxiGroup[k].pickupTime = subtractMinutesFromTime(bucketTime, rideTime);
+                    console.log(`    ${taxiGroup[k].name}: rideTime=${rideTime.toFixed(1)} min, pickup=${taxiGroup[k].pickupTime}, delay=${taxiGroup[k].delay} min`);
                     if (k < finalRoute.legDurations.length) {
                         cumulativeMinutes += finalRoute.legDurations[k];
                     }
@@ -556,7 +623,8 @@ async function greedyMatch(passengers, destination, arrivalDate, bucketTime, onP
             } else {
                 console.warn(`  Final route status=${finalRoute.status} — using directTime fallback`);
                 for (const p of taxiGroup) {
-                    p.pickupTime = subtractMinutesFromTime(bucketTime, p.directTime + (p.delay || 0));
+                    p.delay = 0;
+                    p.pickupTime = subtractMinutesFromTime(bucketTime, p.directTime);
                 }
             }
         }
@@ -621,7 +689,7 @@ export async function mergeTaxis(taxis, taxiId1, taxiId2, destination, mainTime)
     console.log(`  Taxi 2 (${taxiId2}): [${taxi2.passengers.map(p => `${p.name} direct=${p.directTime?.toFixed(1)}min`).join(', ')}]`);
 
     const mergedPassengers = [...taxi1.passengers, ...taxi2.passengers];
-    const bucketTime = mergedPassengers[0].exceptionTime || mainTime;
+    const bucketTime = mergedPassengers[0].arrivalTime || mainTime;
     const arrivalDate = buildArrivalDate(bucketTime);
 
     const waypoints = [...mergedPassengers.map(p => p.address), destination];
@@ -636,16 +704,16 @@ export async function mergeTaxis(taxis, taxiId1, taxiId2, destination, mainTime)
         for (let k = 0; k < mergedPassengers.length; k++) {
             const p = mergedPassengers[k];
             const prevDelay = p.delay;
+            const rideTime = routeResult.totalDuration - cumulativeMinutes;
             mergedPassengers[k].delay = Math.max(
                 0,
-                Math.round((routeResult.totalDuration - p.directTime) * 10) / 10
+                Math.round((rideTime - p.directTime) * 10) / 10
             );
-            const minutesFromStart = cumulativeMinutes;
             mergedPassengers[k].pickupTime = subtractMinutesFromTime(
                 bucketTime,
-                routeResult.totalDuration - minutesFromStart
+                rideTime
             );
-            console.log(`  ${p.name}: directTime=${p.directTime?.toFixed(1)} min, delay=${prevDelay?.toFixed(1)}→${mergedPassengers[k].delay} min, pickup=${mergedPassengers[k].pickupTime}`);
+            console.log(`  ${p.name}: directTime=${p.directTime?.toFixed(1)} min, rideTime=${rideTime.toFixed(1)} min, delay=${prevDelay?.toFixed(1)}→${mergedPassengers[k].delay} min, pickup=${mergedPassengers[k].pickupTime}`);
             if (k < routeResult.legDurations.length) {
                 cumulativeMinutes += routeResult.legDurations[k];
             }
@@ -653,7 +721,8 @@ export async function mergeTaxis(taxis, taxiId1, taxiId2, destination, mainTime)
     } else {
         console.warn(`  ⚠️ Route failed (${routeResult.status}) — using directTime fallback`);
         for (const p of mergedPassengers) {
-            p.pickupTime = subtractMinutesFromTime(bucketTime, p.directTime + (p.delay || 0));
+            p.delay = 0;
+            p.pickupTime = subtractMinutesFromTime(bucketTime, p.directTime);
             console.log(`  ${p.name}: pickup=${p.pickupTime} (fallback)`);
         }
     }
@@ -698,7 +767,7 @@ export async function separatePassenger(taxis, taxiId, passengerId, destination,
     let updatedTaxis = taxis.filter(t => t.id !== taxiId);
 
     if (remainingInTaxi.length > 0) {
-        const bucketTime = remainingInTaxi[0].exceptionTime || mainTime;
+        const bucketTime = remainingInTaxi[0].arrivalTime || mainTime;
         const arrivalDate = buildArrivalDate(bucketTime);
         const waypoints = [...remainingInTaxi.map(p => p.address), destination];
         const routeResult = await getRouteDuration(waypoints, arrivalDate);
@@ -706,14 +775,14 @@ export async function separatePassenger(taxis, taxiId, passengerId, destination,
         if (routeResult.status === 'OK' && routeResult.totalDuration !== null) {
             let cumulativeMinutes = 0;
             for (let k = 0; k < remainingInTaxi.length; k++) {
+                const rideTime = routeResult.totalDuration - cumulativeMinutes;
                 remainingInTaxi[k].delay = Math.max(
                     0,
-                    Math.round((routeResult.totalDuration - remainingInTaxi[k].directTime) * 10) / 10
+                    Math.round((rideTime - remainingInTaxi[k].directTime) * 10) / 10
                 );
-                const minutesFromStart = cumulativeMinutes;
                 remainingInTaxi[k].pickupTime = subtractMinutesFromTime(
                     bucketTime,
-                    routeResult.totalDuration - minutesFromStart
+                    rideTime
                 );
                 if (k < routeResult.legDurations.length) {
                     cumulativeMinutes += routeResult.legDurations[k];
@@ -727,7 +796,7 @@ export async function separatePassenger(taxis, taxiId, passengerId, destination,
         });
     }
 
-    const separatedBucketTime = passengerToSeparate.exceptionTime || mainTime;
+    const separatedBucketTime = passengerToSeparate.arrivalTime || mainTime;
     updatedTaxis.push({
         id: `taxi-sep-${Date.now()}`,
         number: updatedTaxis.length + 1,
@@ -757,7 +826,7 @@ export function estimateMerge(taxis, taxiId1, taxiId2, mainTime) {
     if (!taxi1 || !taxi2) return { taxis, errors: [] };
 
     const mergedPassengers = [...taxi1.passengers, ...taxi2.passengers].map(p => ({ ...p }));
-    const bucketTime = mergedPassengers[0].exceptionTime || mainTime;
+    const bucketTime = mergedPassengers[0].arrivalTime || mainTime;
 
     const maxDirectTime = Math.max(...mergedPassengers.map(p => p.directTime || 0));
     const estimatedTotal = maxDirectTime + (mergedPassengers.length - 1) * 5;
@@ -805,7 +874,7 @@ export function estimateSeparate(taxis, taxiId, passengerId, mainTime) {
         });
     }
 
-    const separatedBucketTime = passengerToSeparate.exceptionTime || mainTime;
+    const separatedBucketTime = passengerToSeparate.arrivalTime || mainTime;
     updatedTaxis.push({
         id: `taxi-sep-${Date.now()}`,
         number: updatedTaxis.length + 1,
@@ -839,24 +908,38 @@ export async function refineTaxis(taxis, destination, mainTime) {
             continue;
         }
 
-        const bucketTime = taxi.passengers[0].exceptionTime || mainTime;
+        const bucketTime = taxi.passengers[0].arrivalTime || mainTime;
         const arrivalDate = buildArrivalDate(bucketTime);
-        const waypoints = [...taxi.passengers.map(p => p.address), destination];
+        let orderedPassengers = [...taxi.passengers];
+
+        if (orderedPassengers.length >= 2) {
+            const addresses = orderedPassengers.map(p => p.address);
+            const directTimes = orderedPassengers.map(p => p.directTime);
+            const pairMatrix = await getAllPairTravelTimes(addresses, arrivalDate);
+
+            const indices = orderedPassengers.map((_, i) => i);
+            const { bestOrder } = estimateGroupRoute(indices, pairMatrix, directTimes);
+            orderedPassengers = bestOrder.map(idx => orderedPassengers[idx]);
+
+            console.log(`[REFINE] Optimized order: ${orderedPassengers.map(p => p.name).join(' → ')}`);
+        }
+
+        const waypoints = [...orderedPassengers.map(p => p.address), destination];
         const routeResult = await getRouteDuration(waypoints, arrivalDate);
 
-        const updatedPassengers = taxi.passengers.map(p => ({ ...p }));
+        const updatedPassengers = orderedPassengers.map(p => ({ ...p }));
 
         if (routeResult.status === 'OK' && routeResult.totalDuration !== null) {
             let cumulativeMinutes = 0;
             for (let k = 0; k < updatedPassengers.length; k++) {
+                const rideTime = routeResult.totalDuration - cumulativeMinutes;
                 updatedPassengers[k].delay = Math.max(
                     0,
-                    Math.round((routeResult.totalDuration - updatedPassengers[k].directTime) * 10) / 10
+                    Math.round((rideTime - updatedPassengers[k].directTime) * 10) / 10
                 );
-                const minutesFromStart = cumulativeMinutes;
                 updatedPassengers[k].pickupTime = subtractMinutesFromTime(
                     bucketTime,
-                    routeResult.totalDuration - minutesFromStart
+                    rideTime
                 );
                 if (k < routeResult.legDurations.length) {
                     cumulativeMinutes += routeResult.legDurations[k];

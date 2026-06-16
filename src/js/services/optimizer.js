@@ -91,6 +91,25 @@ function evaluateOrderTime(order, pairMatrix, directTimes) {
     return time;
 }
 
+/**
+ * Compute per-passenger ride time (time from their pickup to destination)
+ * for a given pickup order.
+ */
+function computeRideTimes(order, pairMatrix, directTimes) {
+    const totalTime = evaluateOrderTime(order, pairMatrix, directTimes);
+    if (totalTime === Infinity) return null;
+
+    const rideTimes = [];
+    let cumulativeLegs = 0;
+    for (let k = 0; k < order.length; k++) {
+        rideTimes.push(totalTime - cumulativeLegs);
+        if (k < order.length - 1) {
+            cumulativeLegs += pairMatrix[order[k]][order[k + 1]];
+        }
+    }
+    return rideTimes;
+}
+
 function evaluateBestOfOrders(orders, pairMatrix, directTimes) {
     let bestTime = Infinity;
     let bestOrder = orders[0];
@@ -136,13 +155,20 @@ export function enumerateValidGroups(n, pairMatrix, directTimes) {
             const { bestOrder, estimatedTime } = estimateGroupRoute([i, j], pairMatrix, directTimes);
             if (estimatedTime === Infinity) continue;
 
-            const delays = [i, j].map(idx => Math.max(0, estimatedTime - directTimes[idx]));
-            const allApproved = [i, j].every((idx, k) =>
-                evaluateDelay(directTimes[idx], delays[k]).approved
+            const rideTimes = computeRideTimes(bestOrder, pairMatrix, directTimes);
+            if (!rideTimes) continue;
+
+            const delays = bestOrder.map((idx, pos) => Math.max(0, rideTimes[pos] - directTimes[idx]));
+            const allApproved = bestOrder.every((idx, pos) =>
+                evaluateDelay(directTimes[idx], delays[pos]).approved
             );
 
             if (allApproved) {
-                validGroups.push({ indices: [i, j], bestOrder, estimatedTime, delays });
+                const delaysByOriginalOrder = [i, j].map(idx => {
+                    const pos = bestOrder.indexOf(idx);
+                    return delays[pos];
+                });
+                validGroups.push({ indices: [i, j], bestOrder, estimatedTime, delays: delaysByOriginalOrder });
             }
         }
     }
@@ -158,13 +184,20 @@ export function enumerateValidGroups(n, pairMatrix, directTimes) {
                     const { bestOrder, estimatedTime } = estimateGroupRoute([i, j, k], pairMatrix, directTimes);
                     if (estimatedTime === Infinity) continue;
 
-                    const delays = [i, j, k].map(idx => Math.max(0, estimatedTime - directTimes[idx]));
-                    const allApproved = [i, j, k].every((idx, m) =>
-                        evaluateDelay(directTimes[idx], delays[m]).approved
+                    const rideTimes = computeRideTimes(bestOrder, pairMatrix, directTimes);
+                    if (!rideTimes) continue;
+
+                    const delays = bestOrder.map((idx, pos) => Math.max(0, rideTimes[pos] - directTimes[idx]));
+                    const allApproved = bestOrder.every((idx, pos) =>
+                        evaluateDelay(directTimes[idx], delays[pos]).approved
                     );
 
                     if (allApproved) {
-                        validGroups.push({ indices: [i, j, k], bestOrder, estimatedTime, delays });
+                        const delaysByOriginalOrder = [i, j, k].map(idx => {
+                            const pos = bestOrder.indexOf(idx);
+                            return delays[pos];
+                        });
+                        validGroups.push({ indices: [i, j, k], bestOrder, estimatedTime, delays: delaysByOriginalOrder });
                     }
                 }
             }
@@ -188,8 +221,15 @@ export async function solveOptimalGrouping(validGroups, n) {
 
     const numVars = validGroups.length;
 
+    // Objective: minimize total taxis while strongly preferring larger groups.
+    // Solo groups cost 1.0; pairs cost 0.5 (saves one taxi); triples cost 0.34.
+    // This ensures the solver always picks a shared group over two solos when
+    // both are feasible.
     let problem = 'Minimize\n  obj: ';
-    const objTerms = validGroups.map((_, g) => `x${g}`);
+    const objTerms = validGroups.map((g, idx) => {
+        const weight = (1 / g.indices.length).toFixed(4);
+        return `${weight} x${idx}`;
+    });
     problem += objTerms.join(' + ') + '\n';
 
     problem += 'Subject To\n';

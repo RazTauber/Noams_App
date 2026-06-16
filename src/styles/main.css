@@ -451,6 +451,13 @@ td input[type="checkbox"] {
     font-size: 0.9rem;
 }
 
+.taxi-passenger-phone {
+    font-weight: 400;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-left: 8px;
+}
+
 .taxi-passenger-address {
     font-size: 0.8rem;
     color: var(--text-secondary);
@@ -481,6 +488,11 @@ td input[type="checkbox"] {
 .delay-warning {
     color: var(--warning-color);
     background: var(--warning-bg);
+}
+
+.delay-danger {
+    color: var(--danger-color);
+    background: rgba(255, 59, 48, 0.1);
 }
 
 .taxi-passenger .btn-danger {

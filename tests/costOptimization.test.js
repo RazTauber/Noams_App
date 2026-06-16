@@ -21,8 +21,8 @@ import { estimateGroupRoute } from '../src/js/services/optimizer.js';
 
 describe('Phase 1 - CLIENT-4: Early rejection on directTime difference', () => {
     const farApartPassengers = [
-        { id: 'p1', name: 'Near', address: 'Near Place 1', isSpecial: false, exceptionTime: '' },
-        { id: 'p2', name: 'Far', address: 'A very far away address in a different city entirely', isSpecial: false, exceptionTime: '' },
+        { id: 'p1', name: 'Near', address: 'Near Place 1', isSpecial: false, arrivalTime: '' },
+        { id: 'p2', name: 'Far', address: 'A very far away address in a different city entirely', isSpecial: false, arrivalTime: '' },
     ];
 
     it('T-SKIP-1: passengers with large directTime difference are not grouped together', async () => {
@@ -46,9 +46,9 @@ describe('Phase 1 - CLIENT-4: Early rejection on directTime difference', () => {
 
     it('T-SKIP-2: passengers with close directTimes can still be grouped', async () => {
         const closePassengers = [
-            { id: 'p1', name: 'A', address: 'Street A 10', isSpecial: false, exceptionTime: '' },
-            { id: 'p2', name: 'B', address: 'Street A 12', isSpecial: false, exceptionTime: '' },
-            { id: 'p3', name: 'C', address: 'Street A 14', isSpecial: false, exceptionTime: '' },
+            { id: 'p1', name: 'A', address: 'Street A 10', isSpecial: false, arrivalTime: '' },
+            { id: 'p2', name: 'B', address: 'Street A 12', isSpecial: false, arrivalTime: '' },
+            { id: 'p3', name: 'C', address: 'Street A 14', isSpecial: false, arrivalTime: '' },
         ];
 
         const result = await calculateRoutes(closePassengers, 'Dest', '06:30', null, { mode: 'greedy' });
@@ -61,7 +61,7 @@ describe('Phase 1 - CLIENT-4: Early rejection on directTime difference', () => {
 describe('Phase 1 - ALGO-4: Solo taxi skip', () => {
     it('T-SOLO-1: single passenger gets correct pickupTime without extra Directions call', async () => {
         const passengers = [
-            { id: 'p1', name: 'Solo', address: 'Solo Street 1', isSpecial: false, exceptionTime: '' },
+            { id: 'p1', name: 'Solo', address: 'Solo Street 1', isSpecial: false, arrivalTime: '' },
         ];
 
         const result = await calculateRoutes(passengers, 'Destination', '06:30', null, { mode: 'greedy' });
@@ -75,7 +75,7 @@ describe('Phase 1 - ALGO-4: Solo taxi skip', () => {
 
     it('T-SOLO-2: solo pickupTime equals subtractMinutesFromTime(bucketTime, directTime)', async () => {
         const passengers = [
-            { id: 'p1', name: 'Solo', address: 'Solo Place', isSpecial: false, exceptionTime: '' },
+            { id: 'p1', name: 'Solo', address: 'Solo Place', isSpecial: false, arrivalTime: '' },
         ];
 
         const result = await calculateRoutes(passengers, 'Destination', '07:00', null, { mode: 'greedy' });
@@ -189,9 +189,9 @@ describe('Phase 3 - resolveMode', () => {
 describe('Phase 3 - Auto mode end-to-end', () => {
     it('T-AUTO-2: small bucket uses greedy in auto mode', async () => {
         const passengers = [
-            { id: 'p1', name: 'A', address: 'Auto1', isSpecial: false, exceptionTime: '' },
-            { id: 'p2', name: 'B', address: 'Auto2', isSpecial: false, exceptionTime: '' },
-            { id: 'p3', name: 'C', address: 'Auto3', isSpecial: false, exceptionTime: '' },
+            { id: 'p1', name: 'A', address: 'Auto1', isSpecial: false, arrivalTime: '' },
+            { id: 'p2', name: 'B', address: 'Auto2', isSpecial: false, arrivalTime: '' },
+            { id: 'p3', name: 'C', address: 'Auto3', isSpecial: false, arrivalTime: '' },
         ];
 
         const result = await calculateRoutes(passengers, 'AutoDest', '06:30', null);
@@ -202,7 +202,7 @@ describe('Phase 3 - Auto mode end-to-end', () => {
 
     it('T-AUTO-3: large bucket uses smart in auto mode', async () => {
         const passengers = Array.from({ length: 8 }, (_, i) => ({
-            id: `p${i}`, name: `P${i}`, address: `LargeAuto Street ${i}`, isSpecial: false, exceptionTime: '',
+            id: `p${i}`, name: `P${i}`, address: `LargeAuto Street ${i}`, isSpecial: false, arrivalTime: '',
         }));
 
         const result = await calculateRoutes(passengers, 'LargeAutoDest', '06:30', null);
@@ -213,15 +213,15 @@ describe('Phase 3 - Auto mode end-to-end', () => {
 
     it('T-AUTO-4: mixed buckets use different modes per bucket', async () => {
         const passengers = [
-            { id: 'p1', name: 'Small1', address: 'SmallBucket 1', isSpecial: false, exceptionTime: '06:00' },
-            { id: 'p2', name: 'Small2', address: 'SmallBucket 2', isSpecial: false, exceptionTime: '06:00' },
-            { id: 'p3', name: 'Small3', address: 'SmallBucket 3', isSpecial: false, exceptionTime: '06:00' },
-            { id: 'p4', name: 'Large1', address: 'LargeBucket 1', isSpecial: false, exceptionTime: '08:00' },
-            { id: 'p5', name: 'Large2', address: 'LargeBucket 2', isSpecial: false, exceptionTime: '08:00' },
-            { id: 'p6', name: 'Large3', address: 'LargeBucket 3', isSpecial: false, exceptionTime: '08:00' },
-            { id: 'p7', name: 'Large4', address: 'LargeBucket 4', isSpecial: false, exceptionTime: '08:00' },
-            { id: 'p8', name: 'Large5', address: 'LargeBucket 5', isSpecial: false, exceptionTime: '08:00' },
-            { id: 'p9', name: 'Large6', address: 'LargeBucket 6', isSpecial: false, exceptionTime: '08:00' },
+            { id: 'p1', name: 'Small1', address: 'SmallBucket 1', isSpecial: false, arrivalTime: '06:00' },
+            { id: 'p2', name: 'Small2', address: 'SmallBucket 2', isSpecial: false, arrivalTime: '06:00' },
+            { id: 'p3', name: 'Small3', address: 'SmallBucket 3', isSpecial: false, arrivalTime: '06:00' },
+            { id: 'p4', name: 'Large1', address: 'LargeBucket 1', isSpecial: false, arrivalTime: '08:00' },
+            { id: 'p5', name: 'Large2', address: 'LargeBucket 2', isSpecial: false, arrivalTime: '08:00' },
+            { id: 'p6', name: 'Large3', address: 'LargeBucket 3', isSpecial: false, arrivalTime: '08:00' },
+            { id: 'p7', name: 'Large4', address: 'LargeBucket 4', isSpecial: false, arrivalTime: '08:00' },
+            { id: 'p8', name: 'Large5', address: 'LargeBucket 5', isSpecial: false, arrivalTime: '08:00' },
+            { id: 'p9', name: 'Large6', address: 'LargeBucket 6', isSpecial: false, arrivalTime: '08:00' },
         ];
 
         const result = await calculateRoutes(passengers, 'MixedDest', '07:00', null);
@@ -291,14 +291,14 @@ describe('Phase 4 - estimateMerge', () => {
         {
             id: 'taxi-1', number: 1,
             passengers: [
-                { id: 'p1', name: 'A', address: 'Addr1', directTime: 30, delay: 0, exceptionTime: '', pickupTime: '06:00' },
+                { id: 'p1', name: 'A', address: 'Addr1', directTime: 30, delay: 0, arrivalTime: '', pickupTime: '06:00' },
             ],
             isSpecial: false, hasError: false,
         },
         {
             id: 'taxi-2', number: 2,
             passengers: [
-                { id: 'p2', name: 'B', address: 'Addr2', directTime: 25, delay: 0, exceptionTime: '', pickupTime: '06:05' },
+                { id: 'p2', name: 'B', address: 'Addr2', directTime: 25, delay: 0, arrivalTime: '', pickupTime: '06:05' },
             ],
             isSpecial: false, hasError: false,
         },
@@ -328,9 +328,9 @@ describe('Phase 4 - estimateSeparate', () => {
         {
             id: 'taxi-1', number: 1,
             passengers: [
-                { id: 'p1', name: 'A', address: 'Addr1', directTime: 30, delay: 5, exceptionTime: '', pickupTime: '05:55' },
-                { id: 'p2', name: 'B', address: 'Addr2', directTime: 25, delay: 8, exceptionTime: '', pickupTime: '06:00' },
-                { id: 'p3', name: 'C', address: 'Addr3', directTime: 28, delay: 6, exceptionTime: '', pickupTime: '05:57' },
+                { id: 'p1', name: 'A', address: 'Addr1', directTime: 30, delay: 5, arrivalTime: '', pickupTime: '05:55' },
+                { id: 'p2', name: 'B', address: 'Addr2', directTime: 25, delay: 8, arrivalTime: '', pickupTime: '06:00' },
+                { id: 'p3', name: 'C', address: 'Addr3', directTime: 28, delay: 6, arrivalTime: '', pickupTime: '05:57' },
             ],
             isSpecial: false, hasError: false,
         },
@@ -368,8 +368,8 @@ describe('Phase 4 - refineTaxis', () => {
             {
                 id: 'taxi-1', number: 1,
                 passengers: [
-                    { id: 'p1', name: 'A', address: 'RefineAddr1', directTime: 30, delay: 5, exceptionTime: '', pickupTime: '~06:00', isEstimated: true },
-                    { id: 'p2', name: 'B', address: 'RefineAddr2', directTime: 25, delay: 8, exceptionTime: '', pickupTime: '~06:05', isEstimated: true },
+                    { id: 'p1', name: 'A', address: 'RefineAddr1', directTime: 30, delay: 5, arrivalTime: '', pickupTime: '~06:00', isEstimated: true },
+                    { id: 'p2', name: 'B', address: 'RefineAddr2', directTime: 25, delay: 8, arrivalTime: '', pickupTime: '~06:05', isEstimated: true },
                 ],
                 isSpecial: false, hasError: false,
             },
@@ -388,7 +388,7 @@ describe('Phase 4 - refineTaxis', () => {
             {
                 id: 'taxi-1', number: 1,
                 passengers: [
-                    { id: 'p1', name: 'A', address: 'ExactAddr', directTime: 30, delay: 0, exceptionTime: '', pickupTime: '06:00', isEstimated: false },
+                    { id: 'p1', name: 'A', address: 'ExactAddr', directTime: 30, delay: 0, arrivalTime: '', pickupTime: '06:00', isEstimated: false },
                 ],
                 isSpecial: false, hasError: false,
             },
@@ -404,15 +404,15 @@ describe('Phase 4 - refineTaxis', () => {
             {
                 id: 'taxi-1', number: 1,
                 passengers: [
-                    { id: 'p1', name: 'Exact', address: 'ExactAddr', directTime: 30, delay: 0, exceptionTime: '', pickupTime: '06:00', isEstimated: false },
+                    { id: 'p1', name: 'Exact', address: 'ExactAddr', directTime: 30, delay: 0, arrivalTime: '', pickupTime: '06:00', isEstimated: false },
                 ],
                 isSpecial: false, hasError: false,
             },
             {
                 id: 'taxi-2', number: 2,
                 passengers: [
-                    { id: 'p2', name: 'Est', address: 'EstAddr1', directTime: 25, delay: 5, exceptionTime: '', pickupTime: '~06:05', isEstimated: true },
-                    { id: 'p3', name: 'Est2', address: 'EstAddr2', directTime: 28, delay: 3, exceptionTime: '', pickupTime: '~06:02', isEstimated: true },
+                    { id: 'p2', name: 'Est', address: 'EstAddr1', directTime: 25, delay: 5, arrivalTime: '', pickupTime: '~06:05', isEstimated: true },
+                    { id: 'p3', name: 'Est2', address: 'EstAddr2', directTime: 28, delay: 3, arrivalTime: '', pickupTime: '~06:02', isEstimated: true },
                 ],
                 isSpecial: false, hasError: false,
             },
@@ -428,9 +428,9 @@ describe('Phase 4 - refineTaxis', () => {
 describe('Phase 4 - Full merge-then-refine flow', () => {
     it('merge then refine produces valid final state', async () => {
         const passengers = [
-            { id: 'p1', name: 'A', address: 'FlowAddr1', isSpecial: false, exceptionTime: '' },
-            { id: 'p2', name: 'B', address: 'FlowAddr2', isSpecial: false, exceptionTime: '' },
-            { id: 'p3', name: 'C', address: 'FlowAddr3', isSpecial: false, exceptionTime: '' },
+            { id: 'p1', name: 'A', address: 'FlowAddr1', isSpecial: false, arrivalTime: '' },
+            { id: 'p2', name: 'B', address: 'FlowAddr2', isSpecial: false, arrivalTime: '' },
+            { id: 'p3', name: 'C', address: 'FlowAddr3', isSpecial: false, arrivalTime: '' },
         ];
 
         const calcResult = await calculateRoutes(passengers, 'FlowDest', '06:30', null, { mode: 'greedy' });

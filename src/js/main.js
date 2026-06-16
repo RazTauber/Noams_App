@@ -315,10 +315,10 @@ function setupExportButtons() {
 function setupTemplateDownload() {
     document.getElementById('downloadTemplateBtn').addEventListener('click', () => {
         const BOM = '\uFEFF';
-        const headers = 'Full Name,Pickup Address,Special Taxi,Exception Time';
+        const headers = 'Full Name,Phone,Pickup Address,Special Taxi,Arrival Time';
         const exampleRows = [
-            'Israel Israeli,"Dizengoff 50, Tel Aviv",No,',
-            'Yael Cohen,"Herzl 10, Rishon LeZion",Yes,08:00',
+            'Israel Israeli,050-1234567,"Dizengoff 50, Tel Aviv",No,',
+            'Yael Cohen,052-9876543,"Herzl 10, Rishon LeZion",Yes,08:00',
         ];
         const csv = BOM + [headers, ...exampleRows].join('\r\n');
 

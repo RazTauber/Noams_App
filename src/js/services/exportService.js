@@ -40,6 +40,7 @@ export async function exportToExcel(taxis, destination, mainTime) {
     worksheet.columns = [
         { header: 'Taxi Number', key: 'taxiNum', width: 13 },
         { header: 'Passenger Name', key: 'name', width: 22 },
+        { header: 'Phone', key: 'phone', width: 15 },
         { header: 'Pickup Address', key: 'address', width: 30 },
         { header: 'Pickup Time', key: 'pickupTime', width: 14 },
         { header: 'Required Arrival', key: 'arrivalTime', width: 17 },
@@ -53,9 +54,10 @@ export async function exportToExcel(taxis, destination, mainTime) {
             dataRows.push({
                 taxiNum: taxi.number,
                 name: passenger.name,
+                phone: passenger.phone || '',
                 address: passenger.address,
                 pickupTime: passenger.pickupTime || '—',
-                arrivalTime: passenger.exceptionTime || mainTime,
+                arrivalTime: passenger.arrivalTime || mainTime,
                 isSpecial: taxi.isSpecial ? 'Yes' : 'No',
                 destination,
             });
@@ -127,9 +129,10 @@ export function exportToPdf(taxis, destination, mainTime) {
             <tr class="${idx % 2 === 0 ? 'row-even' : 'row-odd'}">
                 <td class="col-num">${idx + 1}</td>
                 <td class="col-name">${p.name}</td>
+                <td class="col-phone">${p.phone || ''}</td>
                 <td class="col-address">${p.address}</td>
                 <td class="col-time">${p.pickupTime || '—'}</td>
-                <td class="col-time">${p.exceptionTime || mainTime}</td>
+                <td class="col-time">${p.arrivalTime || mainTime}</td>
             </tr>
         `).join('');
 
@@ -153,6 +156,7 @@ export function exportToPdf(taxis, destination, mainTime) {
                             <tr>
                                 <th class="col-num">#</th>
                                 <th class="col-name">Name</th>
+                                <th class="col-phone">Phone</th>
                                 <th class="col-address">Pickup Address</th>
                                 <th class="col-time">Pickup Time</th>
                                 <th class="col-time">Arrival at Dest.</th>
@@ -368,6 +372,7 @@ export function exportToPdf(taxis, destination, mainTime) {
                 .row-odd { background: #f8fafc; }
                 .col-num { width: 40px; text-align: center; font-weight: 600; color: #94a3b8; }
                 .col-name { font-weight: 500; }
+                .col-phone { width: 100px; font-variant-numeric: tabular-nums; color: #475569; }
                 .col-time { width: 90px; text-align: center; font-variant-numeric: tabular-nums; }
                 .col-address { color: #475569; }
                 .destination {

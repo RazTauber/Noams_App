@@ -10,14 +10,14 @@ describe('Routing Algorithm - evaluateDelay', () => {
         expect(result.reason).toBe('grace_period');
     });
 
-    // T06: Short trip (15 min), 15 min delay → rejected
-    it('T06 - rejects short trip with excessive delay', () => {
+    // T06: Short trip (15 min), 15 min delay → approved (now within 15-min grace)
+    it('T06 - approves short trip delay at grace boundary', () => {
         const result = evaluateDelay(15, 15);
-        expect(result.approved).toBe(false);
-        expect(result.reason).toBe('percentage_exceeded');
+        expect(result.approved).toBe(true);
+        expect(result.reason).toBe('grace_period');
     });
 
-    // T07: Long trip (50 min), 18 min delay → approved (under 40%)
+    // T07: Long trip (50 min), 18 min delay → approved (under 50%)
     it('T07 - approves long trip delay under percentage limit', () => {
         const result = evaluateDelay(50, 18);
         expect(result.approved).toBe(true);
@@ -31,9 +31,9 @@ describe('Routing Algorithm - evaluateDelay', () => {
         expect(result.reason).toBe('hard_cap');
     });
 
-    // Edge: exactly at grace boundary (10 min)
+    // Edge: exactly at grace boundary (15 min)
     it('approves delay exactly at grace period boundary', () => {
-        const result = evaluateDelay(12, 10);
+        const result = evaluateDelay(12, 15);
         expect(result.approved).toBe(true);
         expect(result.reason).toBe('grace_period');
     });
@@ -52,16 +52,16 @@ describe('Routing Algorithm - evaluateDelay', () => {
         expect(result.reason).toBe('hard_cap');
     });
 
-    // Edge: exactly at percentage limit (40% of 50 = 20 min)
+    // Edge: exactly at percentage limit (50% of 50 = 25 min)
     it('approves delay exactly at percentage limit', () => {
-        const result = evaluateDelay(50, 20);
+        const result = evaluateDelay(50, 25);
         expect(result.approved).toBe(true);
         expect(result.reason).toBe('percentage_rule');
     });
 
-    // Edge: just over percentage limit
+    // Edge: just over percentage limit (50% of 30 = 15; 16 > 15 and > grace)
     it('rejects delay just over percentage limit for short-medium trip', () => {
-        const result = evaluateDelay(30, 13);
+        const result = evaluateDelay(30, 16);
         expect(result.approved).toBe(false);
         expect(result.reason).toBe('percentage_exceeded');
     });
